@@ -8,6 +8,7 @@ authors = [{ name = "Facet contributors" }]
 dependencies = []
 
 [project.scripts]
+facet = "facet_runtime.cli:main"
 facet-discover = "facet_runtime.discovery:main"
 
 [build-system]

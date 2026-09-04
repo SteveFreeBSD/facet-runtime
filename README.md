@@ -15,9 +15,25 @@ known-good runtime checks that later work can build on.
 
 ```bash
 uv sync
+facet run "Reply with one short sentence." --backend cpu
+facet run "Reply with one short sentence." --backend gpu
+facet run "Reply with one short sentence." --backend npu
+facet run "Reply with one short sentence." --backend auto
 uv run facet-discover
 uv run facet-discover --json
 ```
+
+`facet run` always emits one JSON result with `text`, `requested_backend`,
+`actual_backend`, `runtime`, `model`, `device`, `elapsed_ms`, and `fallback`.
+CPU and GPU use the installed Ollama Qwen3 0.6B model; CPU forces zero GPU
+layers, while GPU requires Ollama to report model data in VRAM. NPU uses the
+installed FastFlowLM Qwen3 0.6B model and requires FastFlowLM's NPU lock
+confirmation.
+
+`auto` has a fixed preference of NPU, then GPU, then CPU. It selects the first
+available backend before execution and does not retry another backend if that
+execution fails. Explicit backend requests either run on that exact backend or
+fail; they never fall back silently.
 
 The discovery command reports a backend as ready only when its device and the
 corresponding runtime path are both visible. It does not download models or run
@@ -56,4 +72,3 @@ tooling/fastflowlm/      Optional, isolated upstream runtime builds
 Facet currently detects and proves the local compute foundation. Backend
 abstractions, model lifecycle management, routing policy, tools, memory, and
 agent behavior belong to later milestones.
-

@@ -43,7 +43,9 @@ def _cpu_model() -> str:
         cpuinfo = Path("/proc/cpuinfo").read_text(encoding="utf-8")
     except OSError:
         return platform.processor() or "unknown"
-    return _match(cpuinfo, r"^model name\s*:\s*(.+)$") or platform.processor() or "unknown"
+    return (
+        _match(cpuinfo, r"^model name\s*:\s*(.+)$") or platform.processor() or "unknown"
+    )
 
 
 def discover_cpu() -> dict[str, Any]:
@@ -60,9 +62,13 @@ def discover_cpu() -> dict[str, Any]:
 def _ollama_status() -> dict[str, Any]:
     status: dict[str, Any] = {"installed": shutil.which("ollama") is not None}
     code, output = _run("ollama", "--version")
-    status["version"] = _match(output, r"(?:version is|version)\s+([0-9][^\s]*)") if code == 0 else None
+    status["version"] = (
+        _match(output, r"(?:version is|version)\s+([0-9][^\s]*)") if code == 0 else None
+    )
     try:
-        with urllib.request.urlopen("http://127.0.0.1:11434/api/version", timeout=1.0) as response:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:11434/api/version", timeout=1.0
+        ) as response:
             status["service"] = "running"
             status["service_version"] = json.load(response).get("version")
     except (OSError, urllib.error.URLError, json.JSONDecodeError):
@@ -147,7 +153,9 @@ def _print_human(report: dict[str, Any]) -> None:
         device = details.get("model") or details.get("device") or details["backend"]
         print(f"{label.upper():>3}  {state:<9} {device}")
         if label == "gpu":
-            print(f"     driver={details.get('driver_info') or details.get('driver')} ollama={details['ollama']['service']}")
+            print(
+                f"     driver={details.get('driver_info') or details.get('driver')} ollama={details['ollama']['service']}"
+            )
         elif label == "npu":
             print(
                 "     "
@@ -158,7 +166,9 @@ def _print_human(report: dict[str, Any]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    parser.add_argument(
+        "--json", action="store_true", help="emit machine-readable JSON"
+    )
     args = parser.parse_args()
     report = discover()
     if args.json:
@@ -169,4 +179,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

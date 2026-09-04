@@ -9,4 +9,3 @@ def test_cpu_is_always_available() -> None:
 
 def test_report_has_expected_backends() -> None:
     assert set(discover()["backends"]) == {"cpu", "gpu", "npu"}
-
