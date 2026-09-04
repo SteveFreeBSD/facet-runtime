@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+dist/
+build/
+
+# Keep downloaded runtimes and models outside git.
+tooling/fastflowlm/*/
+models/
+

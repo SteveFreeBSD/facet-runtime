@@ -1,0 +1,21 @@
+[project]
+name = "facet-runtime"
+version = "0.1.0"
+description = "Hardware and local-AI runtime foundation for Facet"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Facet contributors" }]
+dependencies = []
+
+[project.scripts]
+facet-discover = "facet_runtime.discovery:main"
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv]
+package = true
+
+[dependency-groups]
+dev = ["pytest>=8.4"]
