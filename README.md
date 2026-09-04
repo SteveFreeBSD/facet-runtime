@@ -43,6 +43,53 @@ fails. Explicit backend requests either run on that exact backend or fail; they
 never fall back silently, and a runtime that returns an empty completion is a
 failed run rather than an answer.
 
+## Remote protocol
+
+`facet-remote` is the only way another machine reaches Facet. It reads one JSON
+request on standard input and writes one JSON response on standard output. A
+consumer may name an operation from a closed set and supply the text to
+execute; it cannot pass a shell command, a path, a URL, an environment, a
+runtime, a model, or a device. Facet chooses where the work runs and reports
+what it actually did.
+
+```bash
+echo '{"facet_protocol_version": 1, "operation": "generate_text",
+       "request_id": "demo-1", "prompt": "Reply with one short sentence.",
+       "constraints": {"accelerator_required": true}}' | facet-remote
+```
+
+A consumer states a *need*, not a device. `accelerator_required` says the work
+must not land on the CPU; Facet picks the accelerator. `allow_fallback`
+defaults to false, and a result that fell back is a failure rather than an
+answer. Both constraints are checked again against what actually happened, so
+Facet refuses a result that broke the constraint it accepted.
+
+| Request field            | Required | Meaning                                  |
+| ------------------------ | -------- | ---------------------------------------- |
+| `facet_protocol_version` | yes      | Exactly `1`.                             |
+| `operation`              | yes      | One of `generate_text`.                  |
+| `request_id`             | yes      | 1-64 of `A-Z a-z 0-9 . _ : -`; echoed back. |
+| `prompt`                 | yes      | Non-empty, at most 12 KiB.               |
+| `constraints`            | no       | `accelerator_required`, `allow_fallback`; booleans. |
+
+A request is validated strictly: an unknown field, an unknown constraint, a
+wrong type, or more than 16 KiB is refused before anything executes. A success
+carries `status: "ok"` and the whole `RunResult` -- including `metrics` and
+`evidence` -- under `result`. A failure carries `status: "error"` and an
+`error` object whose `kind` is one of `invalid_request`,
+`unsupported_version`, `unsupported_operation`, `constraint_unsatisfied`,
+`execution_failed`, or `internal_error`. The helper exits 0 for a success and 1
+for a structured failure, and never writes an answer alongside an error.
+
+Adding a field to a response is a compatible change; consumers are expected to
+ignore fields they do not know. Adding or changing a request field, an
+operation, or a constraint is a protocol version change.
+
+Routing today is the fixed device preference described above. When Facet later
+gains a real router, it takes over `_backend_for` in `remote.py`; the wire
+contract does not move, because a consumer already asks for a constraint rather
+than a device.
+
 ## Model assignment
 
 Every model Facet runs is declared once in `src/facet_runtime/models.py`, with
