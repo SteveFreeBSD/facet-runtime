@@ -102,7 +102,19 @@ def test_gpu_refuses_a_partial_offload(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake_requests(
         monkeypatch, size_vram=LOADED_BYTES // 4, model_name=models.model_for("gpu")
     )
-    with pytest.raises(BackendMismatchError, match="offloaded only 25"):
+    with pytest.raises(BackendMismatchError, match="not fully resident"):
+        ollama.OllamaAdapter("gpu").run("hello")
+
+
+def test_gpu_refuses_an_offload_that_rounds_to_fully_resident(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fake_requests(
+        monkeypatch,
+        size_vram=LOADED_BYTES - 1,
+        model_name=models.model_for("gpu"),
+    )
+    with pytest.raises(BackendMismatchError, match=r"4095 of 4096 bytes"):
         ollama.OllamaAdapter("gpu").run("hello")
 
 

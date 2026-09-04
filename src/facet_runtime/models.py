@@ -71,9 +71,9 @@ ASSIGNMENTS: tuple[ModelAssignment, ...] = (
         role="text",
         runtime="ollama",
         model="qwen3.5:2b",
-        parameters="2B",
-        quantization="Q4_K_M",
-        disk_gib=2.5,
+        parameters="2.3B",
+        quantization="Q8_0",
+        disk_gib=2.55,
         context_tokens=16384,
         max_output_tokens=768,
         rationale=(
@@ -115,15 +115,14 @@ ASSIGNMENTS: tuple[ModelAssignment, ...] = (
         context_tokens=16384,
         max_output_tokens=1024,
         rationale=(
-            "XDNA2 is bandwidth-bound like the other two engines, so the same "
-            "mixture-of-experts model that suits the GPU suits it: 18.7 decode "
-            "tokens per second against 9.3 for a dense 9B, which is within 12% "
-            "of the 890M on the identical model. FastFlowLM holds the weights "
-            "only for the life of one request. FastFlowLM reasons "
+            "This remains the measured preferred NPU text worker: its 18.7 "
+            "decode tokens per second beat 9.3 for a dense 9B and come within "
+            "12% of the 890M on the identical model. One hard reasoning request "
+            "returned an empty completion and therefore a Facet error; the "
+            "underlying cause was not captured. FastFlowLM reasons "
             "unconditionally with this model and counts those tokens against "
-            "max_output_tokens, so a hard multi-step prompt can spend the "
-            "whole budget and return nothing; Facet raises that rather than "
-            "reporting an empty answer. Set FACET_NPU_TEXT_MODEL to "
+            "max_output_tokens, which is a known budget risk rather than a "
+            "confirmed cause of that failure. Set FACET_NPU_TEXT_MODEL to "
             "qwen3.5:9b for a 7.7 GiB, faster-loading, vision-capable "
             "alternative at roughly half the decode rate."
         ),

@@ -32,10 +32,6 @@ from facet_runtime.errors import (
 
 OLLAMA_URL = os.environ.get("FACET_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 
-# A model is only accepted as GPU-resident when Ollama reports every byte it
-# loaded sitting in device memory. A partial offload is a silent CPU fallback.
-FULL_RESIDENCY = 1.0
-
 
 def _request_json(path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
@@ -103,7 +99,7 @@ def _verify_loaded_backend(
         )
     size = int(loaded.get("size", 0))
     vram = int(loaded.get("size_vram", 0))
-    resident = round(vram / size, 4) if size else 0.0
+    resident = vram / size if size else 0.0
     if backend == "cpu" and vram != 0:
         raise BackendMismatchError(
             f"CPU-only execution used {vram} bytes of GPU memory"
@@ -113,10 +109,11 @@ def _verify_loaded_backend(
             raise BackendMismatchError(
                 "GPU execution did not load model data into VRAM"
             )
-        if resident < FULL_RESIDENCY:
+        if vram != size:
             raise BackendMismatchError(
-                f"GPU execution offloaded only {resident:.1%} of {model_name} "
-                f"({vram} of {size} bytes); the remainder would run on the CPU"
+                f"GPU execution was not fully resident for {model_name} "
+                f"({vram} of {size} bytes in device memory; fraction "
+                f"{resident:.9f}); the remainder would run on the CPU"
             )
     return {
         "source": "ollama /api/ps",

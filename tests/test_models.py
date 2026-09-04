@@ -14,6 +14,24 @@ def test_every_backend_has_a_text_model() -> None:
         assert assignment.rationale.strip()
 
 
+def test_cpu_assignment_matches_installed_ollama_artifact() -> None:
+    cpu = models.assignment("cpu", "text")
+
+    assert cpu.model == "qwen3.5:2b"
+    assert cpu.parameters == "2.3B"
+    assert cpu.quantization == "Q8_0"
+    assert cpu.disk_gib == 2.55
+
+
+def test_npu_preference_records_observed_failure_without_guessing_its_cause() -> None:
+    rationale = models.assignment("npu", "text").rationale
+
+    assert "measured preferred NPU text worker" in rationale
+    assert "returned an empty completion" in rationale
+    assert "underlying cause was not captured" in rationale
+    assert "rather than a confirmed cause" in rationale
+
+
 def test_image_pipeline_backends_have_vision_models() -> None:
     for backend in ("gpu", "npu"):
         assert models.assignment(backend, "vision").model
