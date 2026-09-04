@@ -13,7 +13,16 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from facet_runtime.adapters.base import AdapterOutput
+from facet_runtime.adapters.base import (
+    AdapterOutput,
+    ImageAdapterOutput,
+    ImageRuntimeMetadata,
+)
+from facet_runtime.adapters.image_contract import (
+    TRANSCRIPTION_JSON_PROMPT,
+    encode_image,
+    parse_transcription,
+)
 from facet_runtime.errors import (
     BackendMismatchError,
     BackendUnavailableError,
@@ -21,6 +30,7 @@ from facet_runtime.errors import (
 )
 
 FASTFLOW_MODEL = "qwen3:0.6b"
+FASTFLOW_VISION_MODEL = "qwen3.5:4b"
 
 
 def _command_json(*command: str) -> dict[str, Any]:
@@ -69,37 +79,39 @@ def _free_port() -> int:
 
 
 class FastFlowAdapter:
-    """Run Qwen3 on XDNA2 using a short-lived local FastFlowLM server."""
+    """Run text and image Qwen models through short-lived NPU servers."""
 
     backend = "npu"
 
     def _validation(self) -> dict[str, Any]:
         return _command_json("flm", "validate", "--json")
 
-    def _model_installed(self) -> bool:
+    def _model_installed(self, model_name: str) -> bool:
         models = _command_json("flm", "list", "--filter", "installed", "--json").get(
             "models", []
         )
         return any(
-            model.get("model") == FASTFLOW_MODEL and model.get("installed")
+            model.get("model") == model_name and model.get("installed")
             for model in models
         )
 
     def is_available(self) -> bool:
         try:
-            return bool(self._validation().get("ready")) and self._model_installed()
+            return bool(self._validation().get("ready")) and self._model_installed(
+                FASTFLOW_MODEL
+            )
         except FacetRuntimeError:
             return False
 
-    def run(self, prompt: str) -> AdapterOutput:
+    def _prepare(self, model_name: str) -> tuple[str, str]:
         validation = self._validation()
         if not validation.get("ready"):
             raise BackendUnavailableError(
                 "FastFlowLM reports that the NPU stack is not ready"
             )
-        if not self._model_installed():
+        if not self._model_installed(model_name):
             raise BackendUnavailableError(
-                f"FastFlowLM model {FASTFLOW_MODEL} is not installed"
+                f"FastFlowLM model {model_name} is not installed"
             )
 
         devices = validation.get("devices") or []
@@ -111,23 +123,35 @@ class FastFlowAdapter:
         executable = shutil.which("flm")
         if executable is None:
             raise BackendUnavailableError("flm is not installed")
+        return executable, f"AMD XDNA2 NPU ({Path(accel_device)})"
 
+    def _serve_request(
+        self,
+        executable: str,
+        model_name: str,
+        endpoint: str,
+        payload: dict[str, Any],
+        *,
+        image: bool = False,
+    ) -> tuple[dict[str, Any], str]:
         port = _free_port()
         base_url = f"http://127.0.0.1:{port}"
-        log_text = ""
         with tempfile.TemporaryFile() as log_file:
+            command = [
+                executable,
+                "serve",
+                model_name,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--pmode",
+                "performance",
+            ]
+            if image:
+                command.extend(("--img-pre-resize", "0"))
             process = subprocess.Popen(
-                (
-                    executable,
-                    "serve",
-                    FASTFLOW_MODEL,
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    str(port),
-                    "--pmode",
-                    "performance",
-                ),
+                command,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
@@ -152,14 +176,8 @@ class FastFlowAdapter:
                     )
 
                 response = _http_json(
-                    f"{base_url}/api/generate",
-                    {
-                        "model": FASTFLOW_MODEL,
-                        "prompt": prompt,
-                        "stream": False,
-                        "think": False,
-                        "options": {"temperature": 0, "num_predict": 256},
-                    },
+                    f"{base_url}{endpoint}",
+                    payload,
                     timeout=180.0,
                 )
             finally:
@@ -172,9 +190,30 @@ class FastFlowAdapter:
                         process.wait(timeout=5.0)
                 log_file.seek(0)
                 log_text = log_file.read().decode("utf-8", errors="replace")
+        return response, log_text
 
+    @staticmethod
+    def _verify_npu(log_text: str, *, image: bool = False) -> None:
         if "NPU Locked!" not in log_text or "NPU Lock Released!" not in log_text:
             raise BackendMismatchError("FastFlowLM did not confirm NPU execution")
+        if image and "Total images: 1" not in log_text:
+            raise BackendMismatchError("FastFlowLM did not confirm image ingestion")
+
+    def run(self, prompt: str) -> AdapterOutput:
+        executable, device = self._prepare(FASTFLOW_MODEL)
+        response, log_text = self._serve_request(
+            executable,
+            FASTFLOW_MODEL,
+            "/api/generate",
+            {
+                "model": FASTFLOW_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "think": False,
+                "options": {"temperature": 0, "num_predict": 256},
+            },
+        )
+        self._verify_npu(log_text)
         text = response.get("response")
         if not isinstance(text, str):
             raise FacetRuntimeError("FastFlowLM returned no response text")
@@ -183,5 +222,60 @@ class FastFlowAdapter:
             text=text,
             runtime=f"FastFlowLM {version}",
             model=FASTFLOW_MODEL,
-            device=f"AMD XDNA2 NPU ({Path(accel_device)})",
+            device=device,
+        )
+
+    def inspect_image(self, image_path: str) -> ImageAdapterOutput:
+        executable, device = self._prepare(FASTFLOW_VISION_MODEL)
+        encoded_image, media_type = encode_image(image_path)
+        response, log_text = self._serve_request(
+            executable,
+            FASTFLOW_VISION_MODEL,
+            "/v1/chat/completions",
+            {
+                "model": FASTFLOW_VISION_MODEL,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": TRANSCRIPTION_JSON_PROMPT},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{media_type};base64,{encoded_image}"
+                                },
+                            },
+                        ],
+                    }
+                ],
+                "stream": False,
+                "temperature": 0,
+                "max_tokens": 256,
+            },
+            image=True,
+        )
+        self._verify_npu(log_text, image=True)
+        try:
+            raw = response["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise FacetRuntimeError(
+                "FastFlowLM returned no image transcription"
+            ) from error
+        if not isinstance(raw, str):
+            raise FacetRuntimeError("FastFlowLM returned no image transcription")
+        transcription, uncertainties = parse_transcription(raw)
+        version = _command_json("flm", "version", "--json").get("version", "unknown")
+        return ImageAdapterOutput(
+            backend="npu",
+            transcription=transcription,
+            uncertainties=uncertainties,
+            runtime=f"FastFlowLM {version}",
+            model=FASTFLOW_VISION_MODEL,
+            device=device,
+            runtime_metadata=ImageRuntimeMetadata(
+                protocol="openai_chat_completions_image_url",
+                response_format="prompted_json_normalized",
+                strict_json_schema=False,
+            ),
+            accelerator_verified=True,
         )

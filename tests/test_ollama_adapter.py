@@ -42,3 +42,34 @@ def test_gpu_refuses_silent_cpu_execution(monkeypatch: pytest.MonkeyPatch) -> No
     _fake_requests(monkeypatch, size_vram=0)
     with pytest.raises(BackendMismatchError, match="VRAM"):
         ollama.OllamaAdapter("gpu").run("hello")
+
+
+def test_gpu_image_request_uses_vision_model_and_schema(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    image = tmp_path / "fixture.png"
+    image.write_bytes(b"small test image")
+    payloads: list[dict] = []
+
+    def request(path: str, payload: dict | None = None) -> dict:
+        if path == "/api/version":
+            return {"version": "test"}
+        if path == "/api/ps":
+            return {
+                "models": [{"model": ollama.OLLAMA_VISION_MODEL, "size_vram": 1024}]
+            }
+        payloads.append(payload or {})
+        return {"response": '{"transcription":"hello","uncertainties":[]}'}
+
+    monkeypatch.setattr(ollama, "_request_json", request)
+    monkeypatch.setattr(
+        ollama, "_gpu_device", lambda: "AMD Radeon 890M Graphics (RADV STRIX1)"
+    )
+    output = ollama.OllamaAdapter("gpu").inspect_image(str(image))
+    assert output.backend == "gpu"
+    assert output.accelerator_verified is True
+    assert payloads[0]["model"] == "qwen3.5:4b"
+    assert payloads[0]["images"]
+    assert payloads[0]["format"]["required"] == ["transcription", "uncertainties"]
+    assert payloads[0]["options"]["num_gpu"] == 999
+    assert output.runtime_metadata.strict_json_schema is True

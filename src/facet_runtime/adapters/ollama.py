@@ -11,7 +11,17 @@ import urllib.error
 import urllib.request
 from typing import Any, Literal
 
-from facet_runtime.adapters.base import AdapterOutput
+from facet_runtime.adapters.base import (
+    AdapterOutput,
+    ImageAdapterOutput,
+    ImageRuntimeMetadata,
+)
+from facet_runtime.adapters.image_contract import (
+    TRANSCRIPTION_PROMPT,
+    TRANSCRIPTION_SCHEMA,
+    encode_image,
+    parse_transcription,
+)
 from facet_runtime.errors import (
     BackendMismatchError,
     BackendUnavailableError,
@@ -19,6 +29,7 @@ from facet_runtime.errors import (
 )
 
 OLLAMA_MODEL = "qwen3:0.6b"
+OLLAMA_VISION_MODEL = "qwen3.5:4b"
 OLLAMA_URL = os.environ.get("FACET_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 
 
@@ -70,11 +81,26 @@ def _gpu_device() -> str | None:
     return name.group(1).strip()
 
 
-def _loaded_model() -> dict[str, Any] | None:
+def _loaded_model(model_name: str) -> dict[str, Any] | None:
     for model in _request_json("/api/ps").get("models", []):
-        if model.get("model") == OLLAMA_MODEL or model.get("name") == OLLAMA_MODEL:
+        if model.get("model") == model_name or model.get("name") == model_name:
             return model
     return None
+
+
+def _verify_loaded_backend(model_name: str, backend: Literal["cpu", "gpu"]) -> None:
+    loaded = _loaded_model(model_name)
+    if loaded is None:
+        raise BackendMismatchError(
+            "Ollama did not report the generated model as loaded"
+        )
+    vram = int(loaded.get("size_vram", 0))
+    if backend == "cpu" and vram != 0:
+        raise BackendMismatchError(
+            f"CPU-only execution used {vram} bytes of GPU memory"
+        )
+    if backend == "gpu" and vram <= 0:
+        raise BackendMismatchError("GPU execution did not load model data into VRAM")
 
 
 class OllamaAdapter:
@@ -115,20 +141,7 @@ class OllamaAdapter:
         }
         try:
             response = _request_json("/api/generate", payload)
-            loaded = _loaded_model()
-            if loaded is None:
-                raise BackendMismatchError(
-                    "Ollama did not report the generated model as loaded"
-                )
-            vram = int(loaded.get("size_vram", 0))
-            if self.backend == "cpu" and vram != 0:
-                raise BackendMismatchError(
-                    f"CPU-only execution used {vram} bytes of GPU memory"
-                )
-            if self.backend == "gpu" and vram <= 0:
-                raise BackendMismatchError(
-                    "GPU execution did not load model data into VRAM"
-                )
+            _verify_loaded_backend(OLLAMA_MODEL, self.backend)
             text = response.get("response")
             if not isinstance(text, str):
                 raise FacetRuntimeError("Ollama returned no response text")
@@ -142,5 +155,62 @@ class OllamaAdapter:
         finally:
             try:
                 _request_json("/api/generate", {"model": OLLAMA_MODEL, "keep_alive": 0})
+            except FacetRuntimeError:
+                pass
+
+    def inspect_image(self, image_path: str) -> ImageAdapterOutput:
+        if self.backend != "gpu":
+            raise BackendMismatchError(
+                "Ollama image inspection requires the GPU adapter"
+            )
+        if not self.is_available():
+            raise BackendUnavailableError("Ollama GPU backend is unavailable")
+        device = _gpu_device()
+        if device is None:
+            raise BackendUnavailableError("Radeon 890M RADV device is unavailable")
+
+        encoded_image, _ = encode_image(image_path)
+        payload = {
+            "model": OLLAMA_VISION_MODEL,
+            "prompt": TRANSCRIPTION_PROMPT,
+            "images": [encoded_image],
+            "stream": False,
+            "think": False,
+            "keep_alive": "30s",
+            "format": TRANSCRIPTION_SCHEMA,
+            "options": {
+                "temperature": 0,
+                "num_ctx": 4096,
+                "num_predict": 256,
+                "num_gpu": 999,
+            },
+        }
+        try:
+            response = _request_json("/api/generate", payload)
+            _verify_loaded_backend(OLLAMA_VISION_MODEL, "gpu")
+            raw = response.get("response")
+            if not isinstance(raw, str):
+                raise FacetRuntimeError("Ollama returned no image transcription")
+            transcription, uncertainties = parse_transcription(raw)
+            version = _request_json("/api/version").get("version", "unknown")
+            return ImageAdapterOutput(
+                backend="gpu",
+                transcription=transcription,
+                uncertainties=uncertainties,
+                runtime=f"Ollama {version}",
+                model=OLLAMA_VISION_MODEL,
+                device=device,
+                runtime_metadata=ImageRuntimeMetadata(
+                    protocol="ollama_generate_images",
+                    response_format="json_schema",
+                    strict_json_schema=True,
+                ),
+                accelerator_verified=True,
+            )
+        finally:
+            try:
+                _request_json(
+                    "/api/generate", {"model": OLLAMA_VISION_MODEL, "keep_alive": 0}
+                )
             except FacetRuntimeError:
                 pass

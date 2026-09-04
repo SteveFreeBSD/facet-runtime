@@ -19,6 +19,7 @@ facet run "Reply with one short sentence." --backend cpu
 facet run "Reply with one short sentence." --backend gpu
 facet run "Reply with one short sentence." --backend npu
 facet run "Reply with one short sentence." --backend auto
+facet inspect-image tests/fixtures/inspect_image_fixture.png
 uv run facet-discover
 uv run facet-discover --json
 ```
@@ -30,10 +31,22 @@ layers, while GPU requires Ollama to report model data in VRAM. NPU uses the
 installed FastFlowLM Qwen3 0.6B model and requires FastFlowLM's NPU lock
 confirmation.
 
-`auto` has a fixed preference of NPU, then GPU, then CPU. It selects the first
-available backend before execution and does not retry another backend if that
-execution fails. Explicit backend requests either run on that exact backend or
-fail; they never fall back silently.
+`auto` is a documented placeholder with a temporary fixed preference of NPU,
+then GPU, then CPU. That order is not a future routing policy: later routing
+will be capability- and workload-based. Today it selects the first available
+backend before execution and does not retry another backend if that execution
+fails. Explicit backend requests either run on that exact backend or fail; they
+never fall back silently.
+
+`facet inspect-image` sends the same PNG or JPEG first to Qwen3.5 4B on the
+XDNA2 NPU through FastFlowLM, then independently to Qwen3.5 4B on the Radeon
+890M through Ollama/Vulkan. Each adapter normalizes its runtime's response to a
+transcription plus explicit uncertainties. Facet compares normalized lines
+without interpreting or solving any mathematical content and returns both
+passes, line-level differences, accelerator evidence, protocol/structured-output
+metadata, and timings as JSON. FastFlowLM uses its OpenAI-compatible
+chat-completions `image_url` protocol and normalizes prompted JSON at its adapter
+boundary; Ollama uses its native image array with strict JSON-schema output.
 
 The discovery command reports a backend as ready only when its device and the
 corresponding runtime path are both visible. It does not download models or run

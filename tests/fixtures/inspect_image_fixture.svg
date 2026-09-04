@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="600" viewBox="0 0 1200 600">
+  <rect width="1200" height="600" fill="#ffffff"/>
+  <rect x="40" y="40" width="1120" height="520" rx="18" fill="#f7f9fc" stroke="#24324a" stroke-width="4"/>
+  <text x="90" y="125" font-family="Noto Sans, sans-serif" font-size="54" font-weight="700" fill="#172033">FACET IMAGE CHECK</text>
+  <line x1="90" y1="155" x2="1110" y2="155" stroke="#5673a6" stroke-width="3"/>
+  <text x="90" y="225" font-family="Noto Sans, sans-serif" font-size="38" fill="#172033">Project: Facet</text>
+  <text x="90" y="285" font-family="Noto Sans, sans-serif" font-size="38" fill="#172033">Location: Cedar Hall, shelf B7</text>
+  <text x="90" y="345" font-family="Noto Sans, sans-serif" font-size="38" fill="#172033">Reference code: LANTERN-204</text>
+  <text x="90" y="415" font-family="Noto Sans, sans-serif" font-size="34" fill="#42516b">Expression to transcribe:</text>
+  <text x="90" y="485" font-family="Noto Sans, sans-serif" font-size="52" font-weight="600" fill="#172033">y = (x² + 3) / 4 + √17</text>
+  <text x="90" y="535" font-family="Noto Sans, sans-serif" font-size="25" fill="#67748a">Copy the visible text. Do not solve the expression.</text>
+</svg>
