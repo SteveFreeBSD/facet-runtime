@@ -40,12 +40,14 @@ def test_common_result_shape() -> None:
         "device",
         "elapsed_ms",
         "fallback",
+        "metrics",
+        "evidence",
     }
     assert result.requested_backend == result.actual_backend == "cpu"
     assert result.fallback is False
 
 
-def test_auto_preference_is_npu_then_gpu_then_cpu() -> None:
+def test_auto_prefers_the_measured_fastest_available_device() -> None:
     adapters = {
         "cpu": FakeAdapter("cpu"),
         "gpu": FakeAdapter("gpu"),
@@ -53,21 +55,32 @@ def test_auto_preference_is_npu_then_gpu_then_cpu() -> None:
     }
     result = run_prompt("hello", "auto", adapters=adapters)
     assert result.requested_backend == "auto"
+    assert result.actual_backend == "gpu"
+    assert adapters["gpu"].calls == 1
+    assert adapters["npu"].calls == adapters["cpu"].calls == 0
+
+
+def test_auto_skips_an_unavailable_device_without_reordering_the_rest() -> None:
+    adapters = {
+        "cpu": FakeAdapter("cpu"),
+        "gpu": FakeAdapter("gpu", available=False),
+        "npu": FakeAdapter("npu"),
+    }
+    result = run_prompt("hello", "auto", adapters=adapters)
     assert result.actual_backend == "npu"
-    assert adapters["npu"].calls == 1
-    assert adapters["gpu"].calls == adapters["cpu"].calls == 0
+    assert adapters["cpu"].calls == 0
 
 
 def test_auto_does_not_retry_after_selected_backend_fails() -> None:
     adapters = {
         "cpu": FakeAdapter("cpu"),
-        "gpu": FakeAdapter("gpu"),
-        "npu": FakeAdapter("npu", error=FacetRuntimeError("npu failed")),
+        "gpu": FakeAdapter("gpu", error=FacetRuntimeError("gpu failed")),
+        "npu": FakeAdapter("npu"),
     }
-    with pytest.raises(FacetRuntimeError, match="npu failed"):
+    with pytest.raises(FacetRuntimeError, match="gpu failed"):
         run_prompt("hello", "auto", adapters=adapters)
-    assert adapters["npu"].calls == 1
-    assert adapters["gpu"].calls == adapters["cpu"].calls == 0
+    assert adapters["gpu"].calls == 1
+    assert adapters["npu"].calls == adapters["cpu"].calls == 0
 
 
 def test_adapter_cannot_report_a_different_backend() -> None:

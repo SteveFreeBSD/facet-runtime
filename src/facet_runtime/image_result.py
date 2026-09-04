@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
-from facet_runtime.adapters.base import ImageRuntimeMetadata
+from facet_runtime.adapters.base import ExecutionMetrics, ImageRuntimeMetadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +19,8 @@ class ImagePassResult:
     runtime_metadata: ImageRuntimeMetadata
     elapsed_ms: float
     accelerator_verified: bool
+    metrics: ExecutionMetrics = field(default_factory=ExecutionMetrics)
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

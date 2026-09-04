@@ -70,6 +70,8 @@ def _run_pass(
         runtime_metadata=output.runtime_metadata,
         elapsed_ms=elapsed_ms,
         accelerator_verified=True,
+        metrics=output.metrics,
+        evidence=dict(output.evidence),
     )
 
 

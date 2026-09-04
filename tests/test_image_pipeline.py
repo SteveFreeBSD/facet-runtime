@@ -23,7 +23,7 @@ class FakeImageAdapter:
             backend=self.backend,
             transcription=self.transcription,
             uncertainties=self.uncertainties,
-            model="qwen3.5:4b",
+            model="fake-vision-model",
             runtime=f"fake-{self.backend}",
             device=f"fake-{self.backend}-device",
             runtime_metadata=ImageRuntimeMetadata(

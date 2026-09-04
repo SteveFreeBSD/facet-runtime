@@ -10,7 +10,14 @@ from facet_runtime.adapters.base import BackendAdapter
 from facet_runtime.errors import BackendMismatchError, BackendUnavailableError
 from facet_runtime.result import BackendName, RunResult
 
-AUTO_PREFERENCE = ("npu", "gpu", "cpu")
+BACKENDS: tuple[str, ...] = ("cpu", "gpu", "npu")
+
+# Measured decode throughput on this machine orders the devices: the Radeon 890M
+# leads at every model size Facet assigns, the NPU follows, and the CPU is last
+# once a prompt is long enough for prefill to matter. `auto` picks the first
+# available backend in that order and then commits to it; it is a device
+# preference, not a workload router.
+AUTO_PREFERENCE = ("gpu", "npu", "cpu")
 
 
 def default_adapters() -> dict[str, BackendAdapter]:
@@ -29,7 +36,7 @@ def run_prompt(
 ) -> RunResult:
     if not prompt.strip():
         raise ValueError("prompt must not be empty")
-    if requested_backend not in {"cpu", "gpu", "npu", "auto"}:
+    if requested_backend not in {*BACKENDS, "auto"}:
         raise ValueError(f"unsupported backend: {requested_backend}")
 
     adapter_map = dict(adapters or default_adapters())
@@ -60,4 +67,6 @@ def run_prompt(
         device=output.device,
         elapsed_ms=elapsed_ms,
         fallback=False,
+        metrics=output.metrics,
+        evidence=dict(output.evidence),
     )

@@ -13,10 +13,12 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from facet_runtime import models
 from facet_runtime.adapters.base import (
     AdapterOutput,
     ImageAdapterOutput,
     ImageRuntimeMetadata,
+    metrics_from_openai_usage,
 )
 from facet_runtime.adapters.image_contract import (
     TRANSCRIPTION_JSON_PROMPT,
@@ -29,8 +31,10 @@ from facet_runtime.errors import (
     FacetRuntimeError,
 )
 
-FASTFLOW_MODEL = "qwen3:0.6b"
-FASTFLOW_VISION_MODEL = "qwen3.5:4b"
+# Weights are streamed from disk on the first load of a model, so a large model
+# on a cold page cache needs noticeably longer than a warm 0.6B one.
+SERVE_READY_TIMEOUT_S = 240.0
+POWER_MODE = "performance"
 
 
 def _command_json(*command: str) -> dict[str, Any]:
@@ -79,26 +83,34 @@ def _free_port() -> int:
 
 
 class FastFlowAdapter:
-    """Run text and image Qwen models through short-lived NPU servers."""
+    """Run the assigned NPU models through short-lived FastFlowLM servers."""
 
     backend = "npu"
+
+    @property
+    def assignment(self) -> models.ModelAssignment:
+        return models.assignment("npu", "text")
+
+    @property
+    def model(self) -> str:
+        return self.assignment.resolved_model()
 
     def _validation(self) -> dict[str, Any]:
         return _command_json("flm", "validate", "--json")
 
     def _model_installed(self, model_name: str) -> bool:
-        models = _command_json("flm", "list", "--filter", "installed", "--json").get(
+        installed = _command_json("flm", "list", "--filter", "installed", "--json").get(
             "models", []
         )
         return any(
             model.get("model") == model_name and model.get("installed")
-            for model in models
+            for model in installed
         )
 
     def is_available(self) -> bool:
         try:
             return bool(self._validation().get("ready")) and self._model_installed(
-                FASTFLOW_MODEL
+                self.model
             )
         except FacetRuntimeError:
             return False
@@ -133,7 +145,8 @@ class FastFlowAdapter:
         payload: dict[str, Any],
         *,
         image: bool = False,
-    ) -> tuple[dict[str, Any], str]:
+        context_tokens: int | None = None,
+    ) -> tuple[dict[str, Any], str, float]:
         port = _free_port()
         base_url = f"http://127.0.0.1:{port}"
         with tempfile.TemporaryFile() as log_file:
@@ -146,10 +159,13 @@ class FastFlowAdapter:
                 "--port",
                 str(port),
                 "--pmode",
-                "performance",
+                POWER_MODE,
             ]
+            if context_tokens:
+                command.extend(("--ctx-len", str(context_tokens)))
             if image:
                 command.extend(("--img-pre-resize", "0"))
+            started = time.monotonic()
             process = subprocess.Popen(
                 command,
                 stdout=log_file,
@@ -157,7 +173,7 @@ class FastFlowAdapter:
                 start_new_session=True,
             )
             try:
-                deadline = time.monotonic() + 60.0
+                deadline = time.monotonic() + SERVE_READY_TIMEOUT_S
                 while time.monotonic() < deadline:
                     if process.poll() is not None:
                         break
@@ -174,12 +190,8 @@ class FastFlowAdapter:
                     raise BackendUnavailableError(
                         "FastFlowLM server exited before becoming ready"
                     )
-
-                response = _http_json(
-                    f"{base_url}{endpoint}",
-                    payload,
-                    timeout=180.0,
-                )
+                ready_s = round(time.monotonic() - started, 3)
+                response = _http_json(f"{base_url}{endpoint}", payload, timeout=600.0)
             finally:
                 if process.poll() is None:
                     process.terminate()
@@ -190,7 +202,7 @@ class FastFlowAdapter:
                         process.wait(timeout=5.0)
                 log_file.seek(0)
                 log_text = log_file.read().decode("utf-8", errors="replace")
-        return response, log_text
+        return response, log_text, ready_s
 
     @staticmethod
     def _verify_npu(log_text: str, *, image: bool = False) -> None:
@@ -199,41 +211,68 @@ class FastFlowAdapter:
         if image and "Total images: 1" not in log_text:
             raise BackendMismatchError("FastFlowLM did not confirm image ingestion")
 
+    @staticmethod
+    def _evidence(device: str, ready_s: float, model_name: str) -> dict[str, Any]:
+        return {
+            "source": "flm serve log + flm validate",
+            "npu_locked": True,
+            "accel_device": device,
+            "power_mode": POWER_MODE,
+            "server_ready_s": ready_s,
+            "served_model": model_name,
+        }
+
     def run(self, prompt: str) -> AdapterOutput:
-        executable, device = self._prepare(FASTFLOW_MODEL)
-        response, log_text = self._serve_request(
+        assignment = self.assignment
+        model_name = assignment.resolved_model()
+        executable, device = self._prepare(model_name)
+        # FastFlowLM ignores num_predict on /api/generate but does honour
+        # max_tokens on its OpenAI-compatible endpoint, so the output cap Facet
+        # states is the cap the NPU actually applies.
+        response, log_text, ready_s = self._serve_request(
             executable,
-            FASTFLOW_MODEL,
-            "/api/generate",
+            model_name,
+            "/v1/chat/completions",
             {
-                "model": FASTFLOW_MODEL,
-                "prompt": prompt,
+                "model": model_name,
+                "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
-                "think": False,
-                "options": {"temperature": 0, "num_predict": 256},
+                "temperature": 0,
+                "max_tokens": assignment.max_output_tokens,
             },
+            context_tokens=assignment.context_tokens,
         )
         self._verify_npu(log_text)
-        text = response.get("response")
-        if not isinstance(text, str):
+        try:
+            text = response["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise FacetRuntimeError("FastFlowLM returned no response text") from error
+        if not isinstance(text, str) or not text.strip():
+            # A reasoning model that spends its whole token budget on internal
+            # analysis returns an empty message. That is a failed run, not an
+            # answer, so it must not be reported as a successful one.
             raise FacetRuntimeError("FastFlowLM returned no response text")
         version = _command_json("flm", "version", "--json").get("version", "unknown")
         return AdapterOutput(
             text=text,
             runtime=f"FastFlowLM {version}",
-            model=FASTFLOW_MODEL,
+            model=model_name,
             device=device,
+            metrics=metrics_from_openai_usage(response),
+            evidence=self._evidence(device, ready_s, model_name),
         )
 
     def inspect_image(self, image_path: str) -> ImageAdapterOutput:
-        executable, device = self._prepare(FASTFLOW_VISION_MODEL)
+        assignment = models.assignment("npu", "vision")
+        model_name = assignment.resolved_model()
+        executable, device = self._prepare(model_name)
         encoded_image, media_type = encode_image(image_path)
-        response, log_text = self._serve_request(
+        response, log_text, ready_s = self._serve_request(
             executable,
-            FASTFLOW_VISION_MODEL,
+            model_name,
             "/v1/chat/completions",
             {
-                "model": FASTFLOW_VISION_MODEL,
+                "model": model_name,
                 "messages": [
                     {
                         "role": "user",
@@ -250,9 +289,10 @@ class FastFlowAdapter:
                 ],
                 "stream": False,
                 "temperature": 0,
-                "max_tokens": 256,
+                "max_tokens": assignment.max_output_tokens,
             },
             image=True,
+            context_tokens=assignment.context_tokens,
         )
         self._verify_npu(log_text, image=True)
         try:
@@ -270,7 +310,7 @@ class FastFlowAdapter:
             transcription=transcription,
             uncertainties=uncertainties,
             runtime=f"FastFlowLM {version}",
-            model=FASTFLOW_VISION_MODEL,
+            model=model_name,
             device=device,
             runtime_metadata=ImageRuntimeMetadata(
                 protocol="openai_chat_completions_image_url",
@@ -278,4 +318,6 @@ class FastFlowAdapter:
                 strict_json_schema=False,
             ),
             accelerator_verified=True,
+            metrics=metrics_from_openai_usage(response),
+            evidence=self._evidence(device, ready_s, model_name),
         )

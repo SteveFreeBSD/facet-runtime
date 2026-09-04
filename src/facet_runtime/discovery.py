@@ -14,6 +14,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from facet_runtime import models
+
 
 def _run(*command: str, timeout: float = 15.0) -> tuple[int, str]:
     """Run a discovery command without raising when an optional tool is absent."""
@@ -48,7 +50,47 @@ def _cpu_model() -> str:
     )
 
 
+def _ollama_installed_models() -> list[str]:
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:11434/api/tags", timeout=5.0
+        ) as response:
+            tags = json.load(response).get("models", [])
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return []
+    return sorted(
+        str(tag.get("model") or tag.get("name"))
+        for tag in tags
+        if tag.get("model") or tag.get("name")
+    )
+
+
+def _flm_installed_models() -> list[str]:
+    code, output = _run("flm", "list", "--filter", "installed", "--json")
+    if code != 0:
+        return []
+    try:
+        listed = json.loads(output).get("models", [])
+    except json.JSONDecodeError:
+        return []
+    return sorted(str(model.get("model")) for model in listed if model.get("installed"))
+
+
+def _assigned_models(backend: str, installed: list[str]) -> list[dict[str, Any]]:
+    """Report every model Facet assigns to a backend and whether it is present."""
+    report = []
+    for assignment in models.ASSIGNMENTS:
+        if assignment.backend != backend:
+            continue
+        entry = assignment.to_dict()
+        entry["installed"] = entry["model"] in installed
+        report.append(entry)
+    return report
+
+
 def discover_cpu() -> dict[str, Any]:
+    installed = _ollama_installed_models()
+    assigned = _assigned_models("cpu", installed)
     return {
         "available": True,
         "backend": "native CPU",
@@ -56,6 +98,8 @@ def discover_cpu() -> dict[str, Any]:
         "logical_cpus": os.cpu_count(),
         "architecture": platform.machine(),
         "python": platform.python_version(),
+        "assigned_models": assigned,
+        "models_ready": bool(assigned) and all(a["installed"] for a in assigned),
     }
 
 
@@ -82,9 +126,12 @@ def discover_gpu() -> dict[str, Any]:
     render_nodes = sorted(str(path) for path in Path("/dev/dri").glob("renderD*"))
     name = _match(output, r"^\s*deviceName\s*=\s*(.+)$")
     driver = _match(output, r"^\s*driverName\s*=\s*(.+)$")
+    assigned = _assigned_models("gpu", _ollama_installed_models())
     return {
         "available": code == 0 and bool(render_nodes) and bool(name),
         "backend": "Vulkan",
+        "assigned_models": assigned,
+        "models_ready": bool(assigned) and all(a["installed"] for a in assigned),
         "device": name,
         "driver": driver,
         "driver_info": _match(output, r"^\s*driverInfo\s*=\s*(.+)$"),
@@ -122,9 +169,12 @@ def discover_npu() -> dict[str, Any]:
     accel_nodes = sorted(str(path) for path in Path("/dev/accel").glob("accel*"))
     fastflow = _fastflow_status()
     validation = fastflow.get("validation") or {}
+    assigned = _assigned_models("npu", _flm_installed_models())
     return {
         "available": code == 0 and bool(accel_nodes) and bool(validation.get("ready")),
         "backend": "XDNA2 via XRT/FastFlowLM",
+        "assigned_models": assigned,
+        "models_ready": bool(assigned) and all(a["installed"] for a in assigned),
         "device": _match(output, r"^\|\[[^]]+\]\s*\|\s*([^|]+)\|"),
         "driver": "amdxdna" if Path("/sys/module/amdxdna").exists() else None,
         "xrt_version": _match(output, r"^\s*Version\s*:\s*(.+)$"),
@@ -152,6 +202,12 @@ def _print_human(report: dict[str, Any]) -> None:
         state = "READY" if details["available"] else "NOT READY"
         device = details.get("model") or details.get("device") or details["backend"]
         print(f"{label.upper():>3}  {state:<9} {device}")
+        for assigned in details.get("assigned_models", []):
+            mark = "installed" if assigned["installed"] else "MISSING"
+            print(
+                f"     {assigned['role']:<6} {assigned['model']:<16} "
+                f"{assigned['runtime']:<11} {mark}"
+            )
         if label == "gpu":
             print(
                 f"     driver={details.get('driver_info') or details.get('driver')} ollama={details['ollama']['service']}"
