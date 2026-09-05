@@ -1,0 +1,2 @@
+Find the quadratic least-squares regression y=a*x^2+b*x+c for these exact point coordinates. Return ONLY JSON with exactly this schema: {"kind":"quadratic-regression","coefficients":["a","b","c"]}. Coefficients must be exact integer or rational strings, NOT decimal approximations: give the exact coefficients even where the instruction asks for rounded ones. No prose, markdown, or extra keys.
+{"instruction": "Use quadratic regression. Round to three decimal places.", "points": [{"x": "-5", "y": "5"}, {"x": "-2", "y": "-4"}, {"x": "-1", "y": "5"}]}

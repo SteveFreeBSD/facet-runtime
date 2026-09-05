@@ -1,0 +1,12 @@
+Solve this precalculus question.
+Instruction: Find all of the roots.
+Expression(s):
+- x^4-16
+This question takes 4 separate answers.
+Reply with exactly 5 labelled lines and nothing else, and keep every label exactly as written here:
+FINAL ANSWER: all answers as they would ordinarily be written
+PART 1: answer number 1 by itself
+PART 2: answer number 2 by itself
+PART 3: answer number 3 by itself
+PART 4: answer number 4 by itself
+Every line must begin with its own label, including each PART line. A PART line holds only one of those answers: no label repeated inside it, no variable name, no equals sign, no "or", no explanation.

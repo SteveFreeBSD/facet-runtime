@@ -1,0 +1,5 @@
+Solve this precalculus question.
+Instruction: Find the domain of the following function.
+Expression(s):
+- \frac{x+1}{x^2-9}
+Your entire response must be one line beginning with the exact words FINAL ANSWER: followed by only the answer itself. Do not repeat the input expression or output an equals sign. Never output angle brackets or a trailing period. Do not explain.

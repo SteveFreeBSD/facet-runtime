@@ -292,6 +292,23 @@ can be a gate rather than only a report. It never repairs a reply and never
 relaxes a parser: a case that fails is reported failing, with the runtime's own
 reason.
 
+Alongside it, `tests/fixtures/prompts/` holds a golden file per prompt shape —
+the exact text, byte for byte, rendered by the production constructors. Every
+substring assertion in the suite passes no matter how the rest of a sentence is
+written, which is how nine consumer-specific lines survived in the prompts as
+long as they did; a golden turns any rewording into a diff a reviewer reads.
+When a change to the wording is intended:
+
+```bash
+FACET_UPDATE_GOLDEN=1 uv run --frozen pytest -q tests/test_prompt_snapshots.py
+git diff tests/fixtures/prompts/   # read this, then commit it
+```
+
+Nine files cover the two plan prompts and all seven shapes the value prompt
+takes — its `Question:` heading, its `x =` prefix line, one expression and
+several, both closing contracts, the largest `answer_parts`, and one case with
+every optional piece present at once.
+
 ## Foundation checks
 
 ```bash
