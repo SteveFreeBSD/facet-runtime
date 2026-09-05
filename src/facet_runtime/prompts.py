@@ -115,6 +115,29 @@ CASES: tuple[PromptCase, ...] = (
         ),
     ),
     PromptCase(
+        name="prefixed_multi",
+        problem=MathProblem(
+            instruction="Solve for x. Separate multiple answers with a comma.",
+            expressions=("x^2-5*x+6=0",),
+            answer_parts=2,
+        ),
+        # A named variable and several answers at once, which the value prompt
+        # has to state without the two disagreeing. Reachable in production two
+        # ways that never consult each other -- an observed multi control, or a
+        # comma instruction -- so it is worth being able to rerun rather than
+        # rebuilding a request by hand each time.
+        expected={
+            "route": "reasoning",
+            # The roots are 2 and 3, and a multi-part answer has no single
+            # string to type, so `entry` staying empty is part of being right.
+            "answer": {"parts": ["2", "3"], "entry": ""},
+        },
+        note=(
+            "exercises reasoning_prompt with both a prefix line and a "
+            "multi-part contract, and labelled_parts on the way back"
+        ),
+    ),
+    PromptCase(
         name="parabola",
         problem=MathProblem(
             instruction="Graph the parabola.",
@@ -179,23 +202,28 @@ def case(name: str) -> PromptCase:
     raise ValueError(f"unknown prompt case: {name}")
 
 
-def render(subject: PromptCase) -> str | None:
-    """The exact prompt this case would send, or None if it reaches no model.
+def render_problem(problem: MathProblem) -> str | None:
+    """The exact prompt this problem would send, or None if it reaches no model.
 
     Routing is not reimplemented here. `solve_math` decides, exactly as it does
-    in production, and the recorder simply refuses to be a model -- so a case
-    that returns None is a case the deterministic stage answered, which is a
-    fact about the routing rather than about this function.
+    in production, and the recorder simply refuses to be a model -- so a problem
+    that returns None is one the deterministic stage answered, which is a fact
+    about the routing rather than about this function.
     """
 
     def capture(prompt: str) -> RunResult:
         raise _Rendered(prompt)
 
     try:
-        solve_math(subject.problem, reason=capture)
+        solve_math(problem, reason=capture)
     except _Rendered as rendered:
         return rendered.prompt
     return None
+
+
+def render(subject: PromptCase) -> str | None:
+    """The exact prompt this case would send, or None if it reaches no model."""
+    return render_problem(subject.problem)
 
 
 def contains(actual: Any, expected: Any) -> bool:
@@ -331,4 +359,5 @@ __all__ = [
     "model_facing_prompts",
     "render",
     "render_all",
+    "render_problem",
 ]

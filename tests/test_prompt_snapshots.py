@@ -32,10 +32,17 @@ from pathlib import Path
 import pytest
 
 from facet_runtime import prompts
+from facet_runtime.graph import (
+    PARABOLA_PLAN,
+    QUADRATIC_REGRESSION,
+    GraphContext,
+    Point,
+)
 from facet_runtime.solve import (
     MAX_ANSWER_PARTS,
     MathProblem,
     answer_prefix,
+    parse_problem,
     reasoning_prompt,
 )
 
@@ -134,11 +141,51 @@ VALUE_PROMPTS: tuple[tuple[str, MathProblem], ...] = (
 
 #: The two specialists. Their wording does not branch, but the JSON payload
 #: their prompt carries is built from the request, so the golden pins both. The
-#: problems are the harness's own live cases, so a golden is byte for byte what
-#: `facet prompts --live` sends.
-PLAN_PROMPTS: tuple[tuple[str, str], ...] = (
-    ("parabola_plan", "parabola"),
-    ("quadratic_regression", "regression"),
+#: first of each pair is the harness's own live case, so that golden is byte
+#: for byte what `facet prompts --live` sends.
+#:
+#: The second of each pair exists for the payload alone, and only where the
+#: serialisation genuinely differs: a grid whose bounds and snap are not all
+#: halves and whole tens, and a point set carrying the exact rationals the
+#: protocol accepts but the live case never sends. Both are shapes a real
+#: request can take, which `test_every_plan_fixture_is_a_request_that_could_arrive`
+#: holds rather than assumes.
+PLAN_PROMPTS: tuple[tuple[str, MathProblem], ...] = (
+    ("parabola_plan", prompts.case("parabola").problem),
+    (
+        "parabola_plan_offset_grid",
+        MathProblem(
+            instruction="Graph the parabola.",
+            expressions=("f(x)=-2*(x+1)^2+5",),
+            result_kind=PARABOLA_PLAN,
+            graph=GraphContext(
+                family="parabola",
+                orientation="vertical",
+                # Asymmetric, and none of these is a whole ten or a half, so
+                # the float formatting of a bound is actually exercised.
+                bounds=(-4.5, 7.0, -3.0, 12.25),
+                snap=(0.25, 1.0),
+                controls="vertex-and-symmetric-points",
+            ),
+        ),
+    ),
+    ("quadratic_regression", prompts.case("regression").problem),
+    (
+        "quadratic_regression_rational_points",
+        MathProblem(
+            instruction="Use quadratic regression to model the data.",
+            result_kind=QUADRATIC_REGRESSION,
+            # Exact rationals, a zero, and four points rather than three: every
+            # coordinate shape `RATIONAL` admits, none of which the live case
+            # carries.
+            points=(
+                Point("-3/2", "7/4"),
+                Point("0", "-1"),
+                Point("5/2", "3"),
+                Point("4", "-11/3"),
+            ),
+        ),
+    ),
 )
 
 GOLDEN_NAMES = tuple(name for name, _ in (*VALUE_PROMPTS, *PLAN_PROMPTS))
@@ -165,10 +212,10 @@ def rendered(name: str) -> str:
     for known, problem in VALUE_PROMPTS:
         if known == name:
             return reasoning_prompt(problem)
-    for known, live_case in PLAN_PROMPTS:
+    for known, problem in PLAN_PROMPTS:
         if known == name:
-            prompt = prompts.render(prompts.case(live_case))
-            assert prompt is not None, f"{live_case} reached no model"
+            prompt = prompts.render_problem(problem)
+            assert prompt is not None, f"{name} reached no model"
             return prompt
     raise AssertionError(f"unknown golden: {name}")
 
@@ -178,12 +225,39 @@ def test_every_shape_of_the_value_prompt_matches_its_golden(name: str) -> None:
     compare(name, reasoning_prompt(dict(VALUE_PROMPTS)[name]))
 
 
-@pytest.mark.parametrize(("name", "live_case"), PLAN_PROMPTS)
-def test_every_plan_prompt_matches_its_golden(name: str, live_case: str) -> None:
-    prompt = prompts.render(prompts.case(live_case))
+@pytest.mark.parametrize(("name", "problem"), PLAN_PROMPTS)
+def test_every_plan_prompt_matches_its_golden(name: str, problem) -> None:
+    prompt = prompts.render_problem(problem)
 
-    assert prompt is not None, f"the {live_case} case reached no model"
+    assert prompt is not None, f"the {name} problem reached no model"
     compare(name, prompt)
+
+
+def _wire(problem: MathProblem) -> dict:
+    """The request payload a consumer would have sent to produce this problem."""
+    payload: dict = {
+        "result_kind": problem.result_kind,
+        "instruction": problem.instruction,
+    }
+    if problem.expressions:
+        payload["expressions"] = list(problem.expressions)
+    if problem.graph is not None:
+        payload["graph"] = problem.graph.as_json()
+    if problem.points:
+        payload["points"] = [point.as_json() for point in problem.points]
+    return payload
+
+
+@pytest.mark.parametrize(("name", "problem"), PLAN_PROMPTS)
+def test_every_plan_fixture_is_a_request_that_could_arrive(name: str, problem) -> None:
+    """A snapshot of input the protocol would refuse teaches the wrong thing.
+
+    The plan fixtures are built directly, which skips the validation a real
+    request goes through, so each one is put back over the wire and through
+    `parse_problem`. A grid or a coordinate that only exists in this file would
+    otherwise sit here looking like coverage.
+    """
+    assert parse_problem(_wire(problem)) == problem
 
 
 def test_the_goldens_still_cover_every_branch_that_changes_wording() -> None:

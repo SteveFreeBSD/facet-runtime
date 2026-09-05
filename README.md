@@ -282,12 +282,14 @@ facet prompts --live                   # answer them all on a real model
 facet prompts --live --backend gpu --show-prompt
 ```
 
-Four cases cover every route: `exact`, which must reach no model at all;
-`reasoning`, a question the deterministic solvers decline; and `parabola` and
-`regression`, the two graph specialists. A case pins an expected answer only
-where the answer is determined — the regression's three points lie exactly on
-one parabola, so there is one right reply — and reports what it got where it
-is not. `--live` leaves a non-zero status if any case stops answering, so it
+Five cases cover every route: `exact`, which must reach no model at all;
+`reasoning`, a question the deterministic solvers decline; `prefixed_multi`, a
+question that names the variable it solves for *and* takes two answers, which
+is the pairing the value prompt has to state without contradicting itself; and
+`parabola` and `regression`, the two graph specialists. A case pins an expected
+answer only where the answer is determined — the regression's three points lie
+exactly on one parabola, and a quadratic has the roots it has — and reports
+what it got where it is not. `--live` leaves a non-zero status if any case stops answering, so it
 can be a gate rather than only a report. It never repairs a reply and never
 relaxes a parser: a case that fails is reported failing, with the runtime's own
 reason.
@@ -304,11 +306,16 @@ FACET_UPDATE_GOLDEN=1 uv run --frozen pytest -q tests/test_prompt_snapshots.py
 git diff tests/fixtures/prompts/   # read this, then commit it
 ```
 
-Ten files cover the two plan prompts and all eight shapes the value prompt
-takes — its `Question:` heading, its `x =` prefix line, one expression and
-several, both closing contracts, the largest `answer_parts`, a named variable
-together with several answers, and one case with every optional piece present
-at once.
+Twelve files cover all eight shapes the value prompt takes — its `Question:`
+heading, its `x =` prefix line, one expression and several, both closing
+contracts, the largest `answer_parts`, a named variable together with several
+answers, and one case with every optional piece present at once — and four
+plan prompts. The plan prompts get two apiece because their wording does not
+branch but the payload they carry does: alongside each live case there is a
+grid whose bounds and snap are not all halves and whole tens, and a point set
+carrying the exact rationals the protocol accepts but no live case sends. Both
+are held to be requests that could really arrive, by putting them back through
+`parse_problem`.
 
 ## Foundation checks
 

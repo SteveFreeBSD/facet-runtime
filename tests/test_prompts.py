@@ -19,7 +19,17 @@ CORRECT = {
         '"points":[{"x":"4","y":"0"},{"x":"2","y":"0"}]}'
     ),
     "regression": ('{"kind":"quadratic-regression","coefficients":["3","18","20"]}'),
+    "prefixed_multi": "FINAL ANSWER: 2, 3\nPART 1: 2\nPART 2: 3",
 }
+
+#: How the stand-in tells one prompt from another: a phrase that appears in
+#: that prompt and in no other. Two of the cases are value prompts, so the
+#: discriminator has to be the contract rather than the route.
+DISCRIMINATORS: tuple[tuple[str, str], ...] = (
+    ("quadratic-regression", "regression"),
+    ("parabola", "parabola"),
+    ("separate answers", "prefixed_multi"),
+)
 
 
 def answering(replies: dict[str, str] | str, *, raises: Exception | None = None):
@@ -30,12 +40,12 @@ def answering(replies: dict[str, str] | str, *, raises: Exception | None = None)
             raise raises
         if isinstance(replies, str):
             text = replies
-        elif "quadratic-regression" in prompt:
-            text = replies["regression"]
-        elif "parabola" in prompt:
-            text = replies["parabola"]
         else:
-            text = replies["reasoning"]
+            name = next(
+                (candidate for marker, candidate in DISCRIMINATORS if marker in prompt),
+                "reasoning",
+            )
+            text = replies[name]
         return RunResult(
             text=text,
             requested_backend=backend,
@@ -292,3 +302,47 @@ def test_the_word_check_reads_words_and_not_fragments() -> None:
     assert prompts.leaks("Find the domain of the function.") == ()
     assert prompts.leaks("A box on the page") == ("box", "page")
     assert prompts.leaks("Ethnos verifies this") == ("ethnos",)
+
+
+def test_the_prefixed_multi_case_carries_both_statements_to_the_model() -> None:
+    """The pairing that used to disagree with itself, now rerunnable."""
+    prompt = prompts.render(prompts.case("prefixed_multi"))
+
+    assert prompt is not None, "the case was answered exactly and reached no model"
+    assert "`x =` is already written for you" in prompt
+    assert "This question takes 2 separate answers." in prompt
+    assert prompts.leaks(prompt) == ()
+
+
+def test_the_prefixed_multi_case_passes_on_the_roots_and_nothing_else() -> None:
+    row = prompts.check(prompts.case("prefixed_multi"), run=answering(CORRECT))
+
+    assert row["status"] == "ok"
+    assert row["route"] == "reasoning"
+    assert row["answer"]["parts"] == ["2", "3"]
+    assert row["expected_met"] is True
+    assert row["model_calls"] == 1
+
+
+def test_the_prefixed_multi_case_does_not_pass_on_the_wrong_roots() -> None:
+    """`expected` has to be checking the parts, not merely their shape."""
+    row = prompts.check(
+        prompts.case("prefixed_multi"),
+        run=answering({"prefixed_multi": "FINAL ANSWER: 2, 4\nPART 1: 2\nPART 2: 4"}),
+    )
+
+    assert row["status"] == "ok"
+    assert row["expected_met"] is False
+    assert row["passed"] is False
+
+
+def test_the_prefixed_multi_case_runs_the_real_parts_parser() -> None:
+    """One part where two were asked for is refused, not padded."""
+    row = prompts.check(
+        prompts.case("prefixed_multi"),
+        run=answering({"prefixed_multi": "FINAL ANSWER: 2, 3\nPART 1: 2"}),
+    )
+
+    assert row["status"] == "unusable_result"
+    assert row["passed"] is False
+    assert "2 separate answers" in row["error"]
