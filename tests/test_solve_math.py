@@ -16,7 +16,15 @@ import pytest
 from facet_runtime.adapters.base import AdapterOutput, ExecutionMetrics
 from facet_runtime.errors import BackendUnavailableError
 from facet_runtime.remote import PROTOCOL_VERSION, handle
-from facet_runtime.solve import MathProblem, SolveRefused, parse_problem, solve_math
+from facet_runtime.solve import (
+    MAX_ANSWER_PARTS,
+    MathProblem,
+    SolveRefused,
+    answer_prefix,
+    parse_problem,
+    reasoning_prompt,
+    solve_math,
+)
 
 #: A question the deterministic solvers own outright.
 EXACT_INSTRUCTION = "Simplify. Express your answer using rational exponents."
@@ -30,6 +38,13 @@ DECLINED_EXPRESSION = r"f(x)=\frac{x+1}{x^2-9}"
 
 #: Two roots in one box, which the page takes as two separate answers.
 TWO_PART_INSTRUCTION = "Solve. Separate multiple answers with a comma."
+
+#: The same question, naming the variable it solves for. Both things at once:
+#: the answer already carries `x =`, and there are two of them. Nothing
+#: couples the two -- `answer_parts` comes from the control the caller saw or
+#: from a comma instruction, and the prefix from the words "solve for x" -- so
+#: a question can and does arrive with both.
+PREFIXED_TWO_PART_INSTRUCTION = "Solve for x. Separate multiple answers with a comma."
 
 
 @dataclass
@@ -390,3 +405,94 @@ def test_a_failing_reasoning_route_is_reported_as_a_failure() -> None:
             ),
             reason=failing,
         )
+
+
+def _prefix_line(prompt: str) -> str:
+    """The one line of a prompt that names the pre-written variable."""
+    found = [line for line in prompt.splitlines() if line.startswith("`x =`")]
+    assert len(found) == 1, prompt
+    return found[0]
+
+
+def test_a_named_variable_and_several_answers_do_not_contradict_each_other() -> None:
+    """Both at once is a real question, so the prompt must survive being both.
+
+    A quadratic solved for x has a variable to name and two roots to give. The
+    prompt used to say "give only the value that follows it" directly above
+    "This question takes 2 separate answers", which is a self-contradiction of
+    exactly the kind that once cost this model its whole output budget.
+    """
+    prompt = reasoning_prompt(
+        problem(
+            instruction=PREFIXED_TWO_PART_INSTRUCTION,
+            expressions=("x^2-5*x+6=0",),
+            answer_parts=2,
+        )
+    )
+
+    assert answer_prefix(PREFIXED_TWO_PART_INSTRUCTION) == "x"
+    assert "`x =` is already written for you" in prompt
+    assert "This question takes 2 separate answers." in prompt
+    # The sentence that used to disagree with the count no longer states one.
+    assert "only the value that follows it" not in prompt
+    assert "give only what follows it in each answer" in prompt
+
+
+def test_the_prefix_line_reads_the_same_at_every_answer_count() -> None:
+    """One sentence for every arity is what stops the two disagreeing again.
+
+    This is the invariant rather than the wording: any future edit that makes
+    the line depend on how many answers there are reintroduces the bug, and
+    fails here whatever words it chooses.
+    """
+    lines = {
+        parts: _prefix_line(
+            reasoning_prompt(
+                problem(
+                    instruction=PREFIXED_TWO_PART_INSTRUCTION,
+                    expressions=("x^2-5*x+6=0",),
+                    answer_parts=parts,
+                )
+            )
+        )
+        for parts in range(1, MAX_ANSWER_PARTS + 1)
+    }
+
+    assert len(set(lines.values())) == 1, lines
+
+
+def test_a_prefixed_multi_part_question_is_answered_end_to_end() -> None:
+    """Renderable is not the same as answerable, so the whole route is run."""
+    reasoner = Reasoner(text="FINAL ANSWER: 2, 3\nPART 1: 2\nPART 2: 3")
+
+    result = solve_math(
+        problem(
+            instruction=PREFIXED_TWO_PART_INSTRUCTION,
+            expressions=("x^2-5*x+6=0",),
+            answer_parts=2,
+        ),
+        reason=reasoner,
+    )
+
+    assert result["route"] == "reasoning"
+    assert result["answer"]["parts"] == ["2", "3"]
+    assert result["answer"]["display"] == "2, 3"
+    # A multi-part answer has no single string to type, and still has none.
+    assert result["answer"]["entry"] == ""
+
+
+def test_a_prefixed_multi_part_reply_of_the_wrong_shape_still_fails_closed() -> None:
+    """Resolving the wording must not have loosened what counts as an answer."""
+    reasoner = Reasoner(text="FINAL ANSWER: 2, 3\nPART 1: 2")
+
+    with pytest.raises(SolveRefused) as refusal:
+        solve_math(
+            problem(
+                instruction=PREFIXED_TWO_PART_INSTRUCTION,
+                expressions=("x^2-5*x+6=0",),
+                answer_parts=2,
+            ),
+            reason=reasoner,
+        )
+
+    assert refusal.value.kind == "unusable_result"

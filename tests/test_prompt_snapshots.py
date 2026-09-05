@@ -106,12 +106,19 @@ VALUE_PROMPTS: tuple[tuple[str, MathProblem], ...] = (
             answer_parts=MAX_ANSWER_PARTS,
         ),
     ),
-    # Worth reading closely: the prefix line asks for "only the value that
-    # follows it", singular, while the contract below it asks for two separate
-    # answers. Nothing forbids that combination -- `answer_parts` is only
-    # refused on a plan -- and no evidence says it occurs in practice, so the
-    # wording is left exactly as it is and the snapshot keeps it visible rather
-    # than a comment somewhere keeping it in mind.
+    # A named variable and several answers at once, isolated from the noise of
+    # the every-branch case below. Reachable two ways in production -- an
+    # observed multi control, or an instruction asking for comma-separated
+    # answers -- and this is the pairing whose wording used to disagree with
+    # itself, so it gets a snapshot of its own.
+    (
+        "reasoning_prefixed_multi",
+        MathProblem(
+            instruction="Solve for x. Separate multiple answers with a comma.",
+            expressions=("x^2-5*x+6=0",),
+            answer_parts=2,
+        ),
+    ),
     (
         "reasoning_every_branch",
         MathProblem(
@@ -204,6 +211,12 @@ def test_the_goldens_still_cover_every_branch_that_changes_wording() -> None:
     )
     assert any(len(problem.expressions) == 1 for problem in problems)
     assert any(len(problem.expressions) > 1 for problem in problems)
+    # A named variable together with several answers: the pairing whose
+    # wording used to disagree with itself, and a real question either way.
+    assert any(
+        answer_prefix(problem.instruction) and problem.answer_parts > 1
+        for problem in problems
+    ), "no case names a variable and asks for several answers at once"
     # And one case where every optional piece is present at once.
     assert any(
         problem.label.strip()

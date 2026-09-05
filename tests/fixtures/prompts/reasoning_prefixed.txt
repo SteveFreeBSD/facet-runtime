@@ -2,5 +2,5 @@ Solve this precalculus question.
 Instruction: Solve the following formula for the indicated variable. Solve for r.
 Expression(s):
 - C=2*pi*r
-`r =` is already written for you, so give only the value that follows it.
+`r =` is already written for you, so give only what follows it in each answer.
 Your entire response must be one line beginning with the exact words FINAL ANSWER: followed by only the answer itself. Do not repeat the input expression or output an equals sign. Never output angle brackets or a trailing period. Do not explain.

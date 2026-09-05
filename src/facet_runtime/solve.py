@@ -219,10 +219,14 @@ def reasoning_prompt(problem: MathProblem) -> str:
     heading = f"Question: {problem.label.strip()}\n" if problem.label.strip() else ""
     prefix = answer_prefix(problem.instruction)
     # Whoever asked has already written the variable and the equals sign, so
-    # answering with them again would repeat what is there.
+    # answering with them again would repeat what is there. Deliberately one
+    # sentence for every answer count: a question can name the variable *and*
+    # take several answers -- solving for x with two roots does both -- and a
+    # singular "the value" beside a contract asking for two of them is the kind
+    # of self-contradiction this model spends its whole budget arbitrating.
     labelled = (
-        f"`{prefix} =` is already written for you, so give only the value that "
-        "follows it.\n"
+        f"`{prefix} =` is already written for you, so give only what follows "
+        "it in each answer.\n"
         if prefix
         else ""
     )
