@@ -16,6 +16,7 @@ from facet_runtime.adapters.base import (
     AdapterOutput,
     ImageAdapterOutput,
     ImageRuntimeMetadata,
+    empty_completion_error,
     metrics_from_ollama_api,
 )
 from facet_runtime.adapters.image_contract import (
@@ -171,7 +172,11 @@ class OllamaAdapter:
             "model": model_name,
             "prompt": prompt,
             "stream": False,
-            "think": False,
+            # A model that reasons unconditionally ignores `false` and reasons
+            # anyway, so the assignment states an effort instead of a refusal
+            # the model would not honour. Those tokens come out of num_predict
+            # before the answer does.
+            "think": assignment.reasoning_effort or False,
             "keep_alive": "30s",
             "options": {
                 "temperature": 0,
@@ -183,16 +188,27 @@ class OllamaAdapter:
         try:
             response = _request_json("/api/generate", payload)
             evidence = _verify_loaded_backend(model_name, self.backend)
+            metrics = metrics_from_ollama_api(
+                response, output_token_limit=assignment.max_output_tokens
+            )
             text = response.get("response")
             if not isinstance(text, str) or not text.strip():
-                raise FacetRuntimeError("Ollama returned no response text")
+                # An empty answer from a reasoning model is usually a spent
+                # budget rather than a refusal, and the two need opposite
+                # fixes, so the reason is reported rather than flattened.
+                raise empty_completion_error(
+                    "Ollama",
+                    model_name,
+                    metrics=metrics,
+                    reasoning_chars=len(response.get("thinking") or ""),
+                )
             version = _request_json("/api/version").get("version", "unknown")
             return AdapterOutput(
                 text=text,
                 runtime=f"Ollama {version}",
                 model=model_name,
                 device=device,
-                metrics=metrics_from_ollama_api(response),
+                metrics=metrics,
                 evidence=evidence,
             )
         finally:
@@ -215,7 +231,7 @@ class OllamaAdapter:
             "prompt": TRANSCRIPTION_PROMPT,
             "images": [encoded_image],
             "stream": False,
-            "think": False,
+            "think": assignment.reasoning_effort or False,
             "keep_alive": "30s",
             "format": TRANSCRIPTION_SCHEMA,
             "options": {
@@ -228,6 +244,9 @@ class OllamaAdapter:
         try:
             response = _request_json("/api/generate", payload)
             evidence = _verify_loaded_backend(model_name, "gpu")
+            metrics = metrics_from_ollama_api(
+                response, output_token_limit=assignment.max_output_tokens
+            )
             raw = response.get("response")
             if not isinstance(raw, str):
                 raise FacetRuntimeError("Ollama returned no image transcription")
@@ -246,7 +265,7 @@ class OllamaAdapter:
                     strict_json_schema=True,
                 ),
                 accelerator_verified=True,
-                metrics=metrics_from_ollama_api(response),
+                metrics=metrics,
                 evidence=evidence,
             )
         finally:

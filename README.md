@@ -225,19 +225,29 @@ friends — which changes the model but never the device.
 | Backend | Role   | Runtime    | Model         | Why |
 | ------- | ------ | ---------- | ------------- | --- |
 | CPU     | text   | Ollama     | `qwen3.5:2b`  | The installed 2.3B Q8_0 artifact occupies 2.55 GiB. CPU prefill degrades with model size far faster than decode does, so this is the smallest genuinely capable measured worker: 288 prefill and 29 decode tokens per second, against 118 and 16 for a 4B. |
-| GPU     | text   | Ollama     | `gpt-oss:20b` | A mixture-of-experts model reads only its active experts per token, so this is both the largest and the fastest thing the 14.8 GiB aperture can hold: 504 prefill and 21.2 decode, against 319 and 14.4 for a dense 9B. Fully device-resident at a 16k context. |
-| NPU     | text   | FastFlowLM | `gpt-oss:20b` | The measured preferred NPU text worker: 18.7 decode against 9.3 for a dense 9B, and within 12% of the 890M on the identical model. One hard reasoning request returned an empty completion/Facet error; its cause was not captured. |
+| GPU     | text   | Ollama     | `gpt-oss:20b` | A mixture-of-experts model reads only its active experts per token, so this is both the largest and the fastest thing the 14.8 GiB aperture can hold: 504 prefill and 21.2 decode, against 319 and 14.4 for a dense 9B. Fully device-resident at a 16k context. Reasons unconditionally, so it is assigned low reasoning effort and a 2048-token budget. |
+| NPU     | text   | FastFlowLM | `gpt-oss:20b` | The measured preferred NPU text worker: 18.7 decode against 9.3 for a dense 9B, and within 12% of the 890M on the identical model. One hard reasoning request returned an empty completion/Facet error; that failure has since been reproduced and measured on the GPU path with the same model. |
 | GPU     | vision | Ollama     | `qwen3.5:9b`  | Both halves of the image pair run the same model and size class, so a difference between passes means a device difference. At 9B both devices recover a heading and the exact glyphs that 4B dropped. |
 | NPU     | vision | FastFlowLM | `qwen3.5:9b`  | Matches the GPU half exactly. The two passes run one after the other, so only one vision model is resident at a time. |
 
 `gpt-oss:20b` has no vision, which is why the image pipeline keeps `qwen3.5:9b`.
-FastFlowLM's build of `gpt-oss:20b` reasons unconditionally and counts those
-tokens against `max_output_tokens`, which creates an output-budget risk. One
-hard reasoning request returned an empty completion and Facet correctly raised
-an error, but the underlying runtime cause was not captured; the budget behavior
-is not claimed as the cause. Set `FACET_NPU_TEXT_MODEL=qwen3.5:9b` for an NPU
-text model that is 7.7 GiB instead of 14 GiB, loads in about half the time, and
-does not reason unconditionally, at roughly half the decode rate.
+
+It reasons unconditionally on both runtimes and counts those tokens against
+`max_output_tokens`, ahead of the answer. That is no longer a suspicion: a
+quadratic regression that this repository documents answering correctly was
+reproduced returning nothing, with `done_reason: length`, 1024 of 1024 tokens
+spent and 4942 characters of internal reasoning behind them. Ollama ignores a
+request not to reason from this model, so the assignment states an effort
+instead — the same question finishes in 889 tokens including its answer at low
+effort — and the budget is 2048 so a harder one has somewhere to go. Every run
+now reports `stop_reason` and `output_token_limit` alongside its token counts,
+and an empty completion says whether the budget ran out or the model returned
+nothing, because those need opposite fixes.
+
+FastFlowLM exposes no reasoning-effort control, so the NPU path has the budget
+and that report and nothing else. Set `FACET_NPU_TEXT_MODEL=qwen3.5:9b` for an
+NPU text model that is 7.7 GiB instead of 14 GiB, loads in about half the time,
+and does not reason unconditionally, at roughly half the decode rate.
 
 The GPU path requires every loaded byte to sit in device memory. A partial
 offload is a silent CPU fallback, so Facet fails instead of reporting it as GPU

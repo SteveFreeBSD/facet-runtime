@@ -23,13 +23,31 @@ def test_cpu_assignment_matches_installed_ollama_artifact() -> None:
     assert cpu.disk_gib == 2.55
 
 
-def test_npu_preference_records_observed_failure_without_guessing_its_cause() -> None:
+def test_npu_preference_records_the_failure_it_has_now_measured() -> None:
+    """The empty completion was a guess once. It has since been reproduced."""
     rationale = models.assignment("npu", "text").rationale
 
     assert "measured preferred NPU text worker" in rationale
     assert "returned an empty completion" in rationale
-    assert "underlying cause was not captured" in rationale
-    assert "rather than a confirmed cause" in rationale
+    assert "reproduced and measured on the GPU path" in rationale
+    assert "stops on the cap before writing an answer" in rationale
+
+
+def test_a_reasoning_model_is_given_an_effort_and_room_to_spend_it() -> None:
+    """Reasoning tokens come out of the answer's budget, so both are declared."""
+    gpu = models.assignment("gpu", "text")
+
+    assert gpu.reasoning_effort == "low"
+    # Measured: this model spent all 1024 tokens of the previous budget on
+    # internal reasoning and returned nothing, and 889 at low effort.
+    assert gpu.max_output_tokens == 2048
+    assert models.assignment("npu", "text").max_output_tokens == 2048
+
+
+def test_every_assignment_declares_whether_it_reasons() -> None:
+    for assignment in models.ASSIGNMENTS:
+        assert assignment.reasoning_effort in (None, "low", "medium", "high")
+        assert assignment.max_output_tokens > 0
 
 
 def test_image_pipeline_backends_have_vision_models() -> None:

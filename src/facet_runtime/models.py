@@ -36,6 +36,13 @@ class ModelAssignment:
     disk_gib: float
     context_tokens: int
     max_output_tokens: int
+    #: How much internal reasoning the model may spend before it answers, or
+    #: `None` to ask it not to reason at all. A harmony reasoning model such as
+    #: gpt-oss ignores that request and reasons unconditionally, so it is given
+    #: an explicit effort instead. Those tokens are spent out of
+    #: `max_output_tokens`, ahead of the answer, so an effort and a budget only
+    #: mean anything together.
+    reasoning_effort: str | None
     rationale: str
     env_override: str
 
@@ -61,6 +68,7 @@ class ModelAssignment:
             "disk_gib": self.disk_gib,
             "context_tokens": self.context_tokens,
             "max_output_tokens": self.max_output_tokens,
+            "reasoning_effort": self.reasoning_effort,
             "rationale": self.rationale,
         }
 
@@ -76,6 +84,7 @@ ASSIGNMENTS: tuple[ModelAssignment, ...] = (
         disk_gib=2.55,
         context_tokens=16384,
         max_output_tokens=768,
+        reasoning_effort=None,
         rationale=(
             "The CPU path has no accelerator to hide behind: prefill on twelve "
             "Zen 5 cores falls off far faster with model size than decode does, "
@@ -93,14 +102,21 @@ ASSIGNMENTS: tuple[ModelAssignment, ...] = (
         quantization="MXFP4",
         disk_gib=12.1,
         context_tokens=16384,
-        max_output_tokens=1024,
+        max_output_tokens=2048,
+        reasoning_effort="low",
         rationale=(
             "The 890M reaches the whole 14.8 GiB GTT aperture, and a "
             "mixture-of-experts model reads only its active experts per token, "
             "so this is both the largest and the fastest thing the GPU can "
             "hold: 504 prefill and 21.2 decode tokens per second against 319 "
             "and 14.4 for a dense 9B. Ollama reports 12.75 GB of 12.75 GB in "
-            "device memory at a 16k context, so nothing spills to the CPU."
+            "device memory at a 16k context, so nothing spills to the CPU. "
+            "This model reasons unconditionally and ignores a request not to, "
+            "so the effort is stated rather than refused: a measured quadratic "
+            "regression spent all 1024 tokens of the previous budget reasoning "
+            "and returned an empty answer, and the same question at low effort "
+            "finished in 889 including its answer. The budget is 2048 so that "
+            "a harder question has somewhere to go before it hits the cap."
         ),
         env_override="FACET_GPU_TEXT_MODEL",
     ),
@@ -113,18 +129,23 @@ ASSIGNMENTS: tuple[ModelAssignment, ...] = (
         quantization="NPU2",
         disk_gib=14.0,
         context_tokens=16384,
-        max_output_tokens=1024,
+        max_output_tokens=2048,
+        reasoning_effort=None,
         rationale=(
             "This remains the measured preferred NPU text worker: its 18.7 "
             "decode tokens per second beat 9.3 for a dense 9B and come within "
             "12% of the 890M on the identical model. One hard reasoning request "
-            "returned an empty completion and therefore a Facet error; the "
-            "underlying cause was not captured. FastFlowLM reasons "
-            "unconditionally with this model and counts those tokens against "
-            "max_output_tokens, which is a known budget risk rather than a "
-            "confirmed cause of that failure. Set FACET_NPU_TEXT_MODEL to "
-            "qwen3.5:9b for a 7.7 GiB, faster-loading, vision-capable "
-            "alternative at roughly half the decode rate."
+            "returned an empty completion and therefore a Facet error. That "
+            "failure has since been reproduced and measured on the GPU path "
+            "with this same model: it spends its output budget reasoning and "
+            "stops on the cap before writing an answer. FastFlowLM reasons "
+            "unconditionally here too and counts those tokens against "
+            "max_output_tokens, so it takes the same enlarged budget. No "
+            "reasoning effort is stated because FastFlowLM exposes no such "
+            "control; the budget and the truncation report are the whole "
+            "defence on this path. Set FACET_NPU_TEXT_MODEL to qwen3.5:9b for "
+            "a 7.7 GiB, faster-loading, vision-capable alternative at roughly "
+            "half the decode rate."
         ),
         env_override="FACET_NPU_TEXT_MODEL",
     ),
@@ -138,6 +159,7 @@ ASSIGNMENTS: tuple[ModelAssignment, ...] = (
         disk_gib=6.2,
         context_tokens=8192,
         max_output_tokens=512,
+        reasoning_effort=None,
         rationale=(
             "Image inspection runs both accelerators over the same picture, so "
             "the two passes stay in the same model and size class and a "
@@ -156,6 +178,7 @@ ASSIGNMENTS: tuple[ModelAssignment, ...] = (
         disk_gib=7.7,
         context_tokens=8192,
         max_output_tokens=512,
+        reasoning_effort=None,
         rationale=(
             "The NPU half of the image pair matches the GPU half exactly. The "
             "two passes run one after the other, so only one 9B vision model "

@@ -15,6 +15,7 @@ def _fake_requests(
     size_vram: int,
     model_name: str | None = None,
     size: int = LOADED_BYTES,
+    generate: dict | None = None,
 ) -> list[dict]:
     payloads: list[dict] = []
     reported = model_name or models.model_for("cpu")
@@ -29,10 +30,12 @@ def _fake_requests(
         payloads.append(payload or {})
         return {
             "response": "ok",
+            "done_reason": "stop",
             "prompt_eval_count": 20,
             "prompt_eval_duration": 100_000_000,
             "eval_count": 40,
             "eval_duration": 1_000_000_000,
+            **(generate or {}),
         }
 
     monkeypatch.setattr(ollama, "_request_json", request)
@@ -61,23 +64,87 @@ def test_run_reports_measured_throughput(monkeypatch: pytest.MonkeyPatch) -> Non
     assert metrics.decode_tps == 40.0
 
 
+def test_a_run_reports_why_it_stopped_and_what_it_was_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A token count says nothing on its own about whether a run finished."""
+    _fake_requests(monkeypatch, size_vram=0)
+    metrics = ollama.OllamaAdapter("cpu").run("hello").metrics
+
+    assert metrics.stop_reason == "stop"
+    assert metrics.output_token_limit == models.assignment("cpu").max_output_tokens
+    assert metrics.truncated() is False
+
+
 def test_an_empty_completion_is_a_failure_not_an_answer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    payloads = _fake_requests(monkeypatch, size_vram=0)
+    payloads = _fake_requests(
+        monkeypatch, size_vram=0, generate={"response": "   \n ", "done_reason": "stop"}
+    )
 
-    original = ollama._request_json
-
-    def request(path: str, payload: dict | None = None) -> dict:
-        result = original(path, payload)
-        if path == "/api/generate" and payload and "prompt" in payload:
-            return {**result, "response": "   \n "}
-        return result
-
-    monkeypatch.setattr(ollama, "_request_json", request)
     with pytest.raises(FacetRuntimeError, match="no response text"):
         ollama.OllamaAdapter("cpu").run("hello")
     assert payloads
+
+
+def test_a_spent_output_budget_is_reported_as_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live failure: reasoning consumed the whole budget, so nothing was answered.
+
+    Recorded from a real run of the quadratic regression specialist against
+    `gpt-oss:20b` on this machine, which stopped on the cap with 4942
+    characters of internal reasoning and an empty `response`. Reported as "no
+    response text" it looks like a model that declined; reported as a spent
+    budget it names the two settings that actually govern it.
+    """
+    budget = models.assignment("gpu").max_output_tokens
+    _fake_requests(
+        monkeypatch,
+        size_vram=LOADED_BYTES,
+        model_name=models.model_for("gpu"),
+        generate={
+            "response": "",
+            "thinking": "x" * 4942,
+            "done_reason": "length",
+            "eval_count": budget,
+        },
+    )
+
+    with pytest.raises(FacetRuntimeError) as failure:
+        ollama.OllamaAdapter("gpu").run("hello")
+
+    message = str(failure.value)
+    assert "stopped" in message and "output cap" in message
+    assert f"{budget} of {budget} tokens" in message
+    assert "4942 characters" in message
+    # The two settings a reader can actually change, named in the failure.
+    assert "max_output_tokens" in message and "reasoning_effort" in message
+
+
+def test_the_declared_reasoning_effort_is_what_is_asked_for(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model that reasons regardless is given an effort, not a refusal."""
+    payloads = _fake_requests(
+        monkeypatch, size_vram=LOADED_BYTES, model_name=models.model_for("gpu")
+    )
+    ollama.OllamaAdapter("gpu").run("hello")
+
+    assignment = models.assignment("gpu")
+    assert payloads[0]["think"] == assignment.reasoning_effort
+    assert payloads[0]["options"]["num_predict"] == assignment.max_output_tokens
+
+
+def test_a_model_that_does_not_reason_is_asked_not_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payloads = _fake_requests(monkeypatch, size_vram=0)
+    ollama.OllamaAdapter("cpu").run("hello")
+
+    assert models.assignment("cpu").reasoning_effort is None
+    assert payloads[0]["think"] is False
 
 
 def test_gpu_requires_every_loaded_byte_in_device_memory(

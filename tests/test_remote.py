@@ -103,6 +103,8 @@ def test_metrics_and_evidence_reach_the_consumer_unaltered() -> None:
         "generated_tokens": 5,
         "prefill_tps": 504.0,
         "decode_tps": 21.2,
+        "stop_reason": None,
+        "output_token_limit": None,
     }
     assert result["evidence"] == EVIDENCE
     # The envelope must survive the wire, not just the function call.

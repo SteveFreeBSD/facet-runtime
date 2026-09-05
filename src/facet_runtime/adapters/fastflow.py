@@ -18,6 +18,7 @@ from facet_runtime.adapters.base import (
     AdapterOutput,
     ImageAdapterOutput,
     ImageRuntimeMetadata,
+    empty_completion_error,
     metrics_from_openai_usage,
 )
 from facet_runtime.adapters.image_contract import (
@@ -243,6 +244,9 @@ class FastFlowAdapter:
             context_tokens=assignment.context_tokens,
         )
         self._verify_npu(log_text)
+        metrics = metrics_from_openai_usage(
+            response, output_token_limit=assignment.max_output_tokens
+        )
         try:
             text = response["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as error:
@@ -250,15 +254,16 @@ class FastFlowAdapter:
         if not isinstance(text, str) or not text.strip():
             # A reasoning model that spends its whole token budget on internal
             # analysis returns an empty message. That is a failed run, not an
-            # answer, so it must not be reported as a successful one.
-            raise FacetRuntimeError("FastFlowLM returned no response text")
+            # answer, so it must not be reported as a successful one -- and
+            # which of the two it was is the part worth saying out loud.
+            raise empty_completion_error("FastFlowLM", model_name, metrics=metrics)
         version = _command_json("flm", "version", "--json").get("version", "unknown")
         return AdapterOutput(
             text=text,
             runtime=f"FastFlowLM {version}",
             model=model_name,
             device=device,
-            metrics=metrics_from_openai_usage(response),
+            metrics=metrics,
             evidence=self._evidence(device, ready_s, model_name),
         )
 
@@ -318,6 +323,8 @@ class FastFlowAdapter:
                 strict_json_schema=False,
             ),
             accelerator_verified=True,
-            metrics=metrics_from_openai_usage(response),
+            metrics=metrics_from_openai_usage(
+                response, output_token_limit=assignment.max_output_tokens
+            ),
             evidence=self._evidence(device, ready_s, model_name),
         )
