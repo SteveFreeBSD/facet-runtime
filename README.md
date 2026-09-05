@@ -266,6 +266,32 @@ facet bench --repeat 3
 facet bench --backend gpu,npu --case context
 ```
 
+## Checking the prompts
+
+`facet bench` measures throughput on prompts of its own, so it cannot tell you
+whether Facet's *own* prompts still answer. `facet prompts` does exactly that.
+Each case is a real problem answered by the real `solve_math`: the same
+routing, the same prompt constructors, the same strict parsers, the same
+adapters. Nothing in it writes a prompt, so a rendered prompt is byte for byte
+what production would send.
+
+```bash
+facet prompts                          # render every prompt, no model, no network
+facet prompts --case regression        # one of them, for reading or diffing
+facet prompts --live                   # answer them all on a real model
+facet prompts --live --backend gpu --show-prompt
+```
+
+Four cases cover every route: `exact`, which must reach no model at all;
+`reasoning`, a question the deterministic solvers decline; and `parabola` and
+`regression`, the two graph specialists. A case pins an expected answer only
+where the answer is determined — the regression's three points lie exactly on
+one parabola, so there is one right reply — and reports what it got where it
+is not. `--live` leaves a non-zero status if any case stops answering, so it
+can be a gate rather than only a report. It never repairs a reply and never
+relaxes a parser: a case that fails is reported failing, with the runtime's own
+reason.
+
 ## Foundation checks
 
 ```bash
