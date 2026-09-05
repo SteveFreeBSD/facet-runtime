@@ -1,0 +1,317 @@
+"""Facet's solver router: exact mathematics first, reasoning only for the rest.
+
+A consumer that has a *question* rather than a prompt asks for `solve_math`. It
+hands over the instruction in words, the exact expressions the question is
+about, and how many separate values its answer takes -- and nothing else. Facet
+then decides how the question gets answered.
+
+That decision is the point of this module, and it is Facet's alone to make. The
+deterministic solvers run first, because anything they settle is settled in a
+millisecond, with no model, no accelerator and no network, and their answer is
+checkable rather than merely plausible. Only what genuinely falls past them
+reaches a reasoning model, and the result says which route ran.
+
+A constraint like `accelerator_required` is a statement about where *model*
+execution may land. An exact solve engages no backend at all, so it satisfies
+any such constraint by never needing one, and it reports `actual_backend` as
+null rather than claiming a processor it never used. Nothing is substituted
+quietly: the route is named in every result.
+
+What crosses back is structured. Separate answers stay separate values, and a
+value carries how literally to take it. Presenting them -- keystrokes, fields,
+options, a graph -- belongs to the consumer that owns the surface, and Facet
+owns no surface.
+"""
+
+from __future__ import annotations
+
+import re
+import time
+from dataclasses import dataclass
+from typing import Any, Literal
+
+import sympy
+
+from facet_runtime.exact import (
+    EntryMode,
+    ExactSolution,
+    extract_final_math,
+    solve_exact,
+)
+from facet_runtime.result import RunResult
+
+MAX_EXPRESSIONS = 8
+MAX_EXPRESSION_CHARS = 2000
+MAX_INSTRUCTION_CHARS = 4000
+MAX_LABEL_CHARS = 200
+MAX_ANSWER_PARTS = 4
+
+Route = Literal["exact", "reasoning"]
+
+#: `PART 1: ...` from a multi-part reasoning reply. Structured on purpose: the
+#: alternative is recovering mathematical boundaries out of display prose,
+#: which is exactly the reparsing this exists to avoid.
+PART_LINE = re.compile(r"(?im)^\s*PART\s+(\d+)\s*:\s*(.+?)\s*$")
+
+#: The variable a formula question isolates, which a page then prints beside
+#: the answer box as `r =`. Read out of the question, so the reasoning route is
+#: told not to repeat something the page already displays.
+ANSWER_PREFIX = re.compile(r"\bsolve\s+for\s+([A-Za-z])\b", re.IGNORECASE)
+
+
+class SolveRefused(Exception):
+    """Facet will not answer this, and says which kind of refusal it is."""
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+@dataclass(frozen=True, slots=True)
+class MathProblem:
+    """One question, in the only terms Facet accepts it.
+
+    There is no page here, and there is deliberately no way to describe one.
+    `answer_parts` is a requirement on the *reply* -- how many separate values
+    the answer has -- which is a property of the question. Where those values
+    are then typed is the consumer's business and never crosses.
+    """
+
+    instruction: str
+    expressions: tuple[str, ...]
+    answer_parts: int = 1
+    label: str = ""
+
+
+def parse_problem(payload: Any) -> MathProblem:
+    """Validate one problem completely, or refuse it with a reason."""
+    if not isinstance(payload, dict):
+        raise SolveRefused("invalid_request", "problem must be an object")
+    known = {"instruction", "expressions", "answer_parts", "label"}
+    unknown = sorted(set(payload) - known)
+    if unknown:
+        raise SolveRefused(
+            "invalid_request", f"unknown problem field: {', '.join(unknown)}"
+        )
+    instruction = payload.get("instruction")
+    if not isinstance(instruction, str) or not instruction.strip():
+        raise SolveRefused("invalid_request", "instruction must be a non-empty string")
+    if len(instruction) > MAX_INSTRUCTION_CHARS:
+        raise SolveRefused("invalid_request", "instruction exceeds the size limit")
+    expressions = payload.get("expressions")
+    if (
+        not isinstance(expressions, list)
+        or not 1 <= len(expressions) <= MAX_EXPRESSIONS
+    ):
+        raise SolveRefused(
+            "invalid_request",
+            f"expressions must be a list of 1 to {MAX_EXPRESSIONS} strings",
+        )
+    for expression in expressions:
+        if not isinstance(expression, str) or not expression.strip():
+            raise SolveRefused("invalid_request", "every expression must be a string")
+        if len(expression) > MAX_EXPRESSION_CHARS:
+            raise SolveRefused(
+                "invalid_request", "an expression exceeds the size limit"
+            )
+    parts = payload.get("answer_parts", 1)
+    # `True == 1` in Python, so the type is checked before the value.
+    if (
+        not isinstance(parts, int)
+        or isinstance(parts, bool)
+        or not 1 <= parts <= MAX_ANSWER_PARTS
+    ):
+        raise SolveRefused(
+            "invalid_request", f"answer_parts must be 1 to {MAX_ANSWER_PARTS}"
+        )
+    label = payload.get("label", "")
+    if not isinstance(label, str) or len(label) > MAX_LABEL_CHARS:
+        raise SolveRefused("invalid_request", "label must be a short string")
+    return MathProblem(
+        instruction=instruction,
+        expressions=tuple(expressions),
+        answer_parts=parts,
+        label=label,
+    )
+
+
+def answer_prefix(instruction: str) -> str:
+    """The label a page already prints beside the box, or an empty string."""
+    match = ANSWER_PREFIX.search(instruction)
+    return match.group(1) if match else ""
+
+
+def reasoning_prompt(problem: MathProblem) -> str:
+    """State the question in the exact terms Facet was handed.
+
+    Every expression here arrived exactly, so nothing is a transcription and
+    none of it needed a picture. The question's own label is context rather
+    than instruction: it is sometimes the only thing that distinguishes one
+    step of a problem from the next.
+
+    The answer shape is stated as a requirement on the reply, never as a
+    description of a page. The model is told how many values to produce and
+    what a value may contain; it is told nothing about fields, editors, or
+    where an answer is going, because none of that is its to reason about.
+    """
+    rendered = "\n".join(f"- {expression}" for expression in problem.expressions)
+    heading = f"Question: {problem.label.strip()}\n" if problem.label.strip() else ""
+    prefix = answer_prefix(problem.instruction)
+    # A page that already prints the variable and the equals sign beside the
+    # box would otherwise get them typed in a second time, literally.
+    labelled = (
+        f"The page already prints `{prefix} =` beside the answer, so give only "
+        "the value that follows it.\n"
+        if prefix
+        else ""
+    )
+    parts = problem.answer_parts
+    if parts > 1:
+        contract = (
+            f"This question takes {parts} separate answers.\n"
+            f"Reply with exactly {parts + 1} labelled lines and nothing else, "
+            "and keep every label exactly as written here:\n"
+            "FINAL ANSWER: all answers as the page would display them\n"
+            + "".join(
+                f"PART {index}: answer number {index} by itself\n"
+                for index in range(1, parts + 1)
+            )
+            + "Every line must begin with its own label, including each PART "
+            "line. A PART line holds only what belongs in that one answer box: "
+            "no label repeated inside it, no variable name, no equals sign, no "
+            '"or", no explanation.'
+        )
+    else:
+        contract = (
+            "Your entire response must be one line beginning with the exact words "
+            "FINAL ANSWER: followed by only what belongs in the Hawkes answer box. "
+            "Do not repeat the input expression or output an equals sign. Never output "
+            "angle brackets or a trailing period. Do not explain."
+        )
+    return (
+        "Solve this Hawkes precalculus question.\n"
+        f"{heading}"
+        f"Instruction: {problem.instruction}\n"
+        f"Expression(s):\n{rendered}\n"
+        f"{labelled}"
+        f"{contract}"
+    )
+
+
+def labelled_parts(text: str, expected: int) -> list[str] | None:
+    """Read the `PART n:` lines of a multi-part reply, or refuse.
+
+    Returns None unless the reply carries exactly the parts that were asked
+    for, numbered from one and in order. A reply that produced a different
+    count did not answer the question that was asked -- it answered a
+    differently shaped one -- and an answer of the wrong shape is worse than no
+    answer, because a consumer would place it into real answer boxes.
+    """
+    found = PART_LINE.findall(text)
+    if len(found) != expected:
+        return None
+    if [index for index, _ in found] != [str(n) for n in range(1, expected + 1)]:
+        return None
+    values = [value.strip() for _, value in found]
+    return values if all(values) else None
+
+
+def _answer(
+    display: str, entry: str, parts: tuple[str, ...], entry_mode: EntryMode
+) -> dict[str, Any]:
+    return {
+        "display": display,
+        "entry": entry,
+        "parts": list(parts),
+        "entry_mode": entry_mode,
+    }
+
+
+def _exact_result(solution: ExactSolution, elapsed_ms: float) -> dict[str, Any]:
+    return {
+        "route": "exact",
+        "answer": _answer(
+            solution.display, solution.entry, solution.parts, solution.entry_mode
+        ),
+        "provenance": {
+            # The identity Facet answers to when it computed the answer itself.
+            "source": "Facet Exact",
+            "method": solution.method,
+            "router": "solved",
+            "router_detail": "",
+            "runtime": f"SymPy {sympy.__version__}",
+            "model": None,
+            "device": None,
+            "requested_backend": None,
+            "actual_backend": None,
+            "elapsed_ms": elapsed_ms,
+            "fallback": False,
+            "metrics": {},
+            # The proof that no model took part, in the same place a model run
+            # proves where it ran.
+            "evidence": {"source": "facet exact solver", "model_calls": 0},
+        },
+    }
+
+
+def _reasoning_result(
+    problem: MathProblem, run: RunResult, decline: str, elapsed_ms: float
+) -> dict[str, Any]:
+    final_math = extract_final_math(run.text)
+    if not final_math:
+        raise SolveRefused(
+            "unusable_result", "the reasoning route returned no FINAL ANSWER"
+        )
+    entry, parts = final_math, ()
+    if problem.answer_parts > 1:
+        values = labelled_parts(run.text, problem.answer_parts)
+        if values is None:
+            # Fail closed. The question needs a known number of values and this
+            # reply does not carry them, so nothing here may become an answer.
+            raise SolveRefused(
+                "unusable_result",
+                f"the reasoning route did not return the {problem.answer_parts} "
+                "separate answers this question needs",
+            )
+        # A multi-part answer has no single string that could be typed into
+        # several separate boxes, so there is no single entry.
+        entry, parts = "", tuple(values)
+    return {
+        "route": "reasoning",
+        "answer": _answer(final_math, entry, parts, "auto"),
+        "provenance": {
+            # Where the work ran is reported, not assumed.
+            "source": f"Facet Reasoning · {run.actual_backend.upper()}",
+            "method": run.model,
+            "router": "declined",
+            # Which gap the deterministic stage fell through, in its own words.
+            "router_detail": decline,
+            "runtime": run.runtime,
+            "model": run.model,
+            "device": run.device,
+            "requested_backend": run.requested_backend,
+            "actual_backend": run.actual_backend,
+            "elapsed_ms": elapsed_ms,
+            "fallback": run.fallback,
+            "metrics": run.to_dict()["metrics"],
+            "evidence": dict(run.evidence),
+        },
+    }
+
+
+def solve_math(problem: MathProblem, *, reason) -> dict[str, Any]:
+    """Route one question, run it, and return the structured result.
+
+    `reason(prompt)` executes the reasoning route under whatever constraints
+    the caller established, and is only called when the deterministic stage
+    declines.
+    """
+    started = time.perf_counter()
+    solution, decline = solve_exact(problem.instruction, list(problem.expressions))
+    if solution is not None:
+        return _exact_result(solution, round((time.perf_counter() - started) * 1000, 3))
+
+    run = reason(reasoning_prompt(problem))
+    return _reasoning_result(
+        problem, run, decline, round((time.perf_counter() - started) * 1000, 3)
+    )

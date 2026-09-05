@@ -1,10 +1,17 @@
-"""Facet remote protocol v1: one bounded intelligence request over stdin.
+"""Facet remote protocol v2: one bounded intelligence request over stdin.
 
 A remote consumer -- Ethnos today, others later -- writes one JSON request to
 this helper's standard input and reads one JSON response from its standard
 output. That is the entire remote surface. A consumer may name only an
 operation from a closed set and supply the text to execute; it cannot pass a
 shell command, a path, a URL, an environment, a runtime, a model, or a device.
+
+Two operations exist. `generate_text` executes a prompt the consumer wrote.
+`solve_math` hands over a *question* -- an instruction, the exact expressions
+it is about, and how many separate values its answer takes -- and lets Facet
+decide how it gets answered: deterministic exact mathematics first, a reasoning
+model only for what genuinely falls past it. Which route ran is named in the
+result, and the answer comes back structured rather than as one string.
 
 The division of labour is deliberate. A consumer states what it *needs* as a
 constraint -- "this must run on an accelerator", "do not fall back" -- and
@@ -29,14 +36,15 @@ from typing import Any, BinaryIO, Literal, TextIO
 
 from facet_runtime.adapters.base import BackendAdapter
 from facet_runtime.errors import FacetRuntimeError
-from facet_runtime.result import BackendName
+from facet_runtime.result import BackendName, RunResult
 from facet_runtime.runtime import AUTO_PREFERENCE, default_adapters, run_prompt
+from facet_runtime.solve import MathProblem, SolveRefused, parse_problem, solve_math
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 #: The closed set of operations a remote consumer may name. Growing this set is
 #: a protocol change; nothing outside it is reachable from a request.
-SUPPORTED_OPERATIONS: tuple[str, ...] = ("generate_text",)
+SUPPORTED_OPERATIONS: tuple[str, ...] = ("generate_text", "solve_math")
 
 #: Backends that count as an accelerator for `accelerator_required`. This is
 #: Facet's own hardware knowledge, not the consumer's: a consumer asks for an
@@ -48,7 +56,15 @@ MAX_PROMPT_BYTES = 12 * 1024
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_MESSAGE_CHARS = 400
 
-REQUEST_FIELDS = ("facet_protocol_version", "operation", "request_id", "prompt")
+REQUEST_FIELDS = ("facet_protocol_version", "operation", "request_id")
+
+#: What each operation additionally requires. An operation is answered with its
+#: own payload and no other: a `solve_math` request carrying a `prompt` is not
+#: a request Facet half-understands, it is a request for something else.
+OPERATION_FIELDS: dict[str, tuple[str, ...]] = {
+    "generate_text": ("prompt",),
+    "solve_math": ("problem",),
+}
 OPTIONAL_REQUEST_FIELDS = ("constraints",)
 CONSTRAINT_FIELDS = ("accelerator_required", "allow_fallback")
 
@@ -63,6 +79,11 @@ ErrorKind = Literal[
     "unsupported_operation",
     "constraint_unsatisfied",
     "execution_failed",
+    # Facet ran, and what came back cannot be an answer: a reply with no final
+    # answer in it, or one carrying the wrong number of separate answers.
+    # Distinct from `execution_failed` because the run itself succeeded, and a
+    # consumer says something different about a bad answer than a failed call.
+    "unusable_result",
     "internal_error",
 ]
 
@@ -81,7 +102,8 @@ class RemoteRequest:
 
     operation: str
     request_id: str
-    prompt: str
+    prompt: str = ""
+    problem: MathProblem | None = None
     accelerator_required: bool = False
     allow_fallback: bool = False
 
@@ -114,9 +136,10 @@ def _checked_version(payload: dict[str, Any]) -> None:
         )
 
 
-def _checked_fields(payload: dict[str, Any]) -> None:
-    missing = [name for name in REQUEST_FIELDS if name not in payload]
-    unknown = sorted(set(payload) - {*REQUEST_FIELDS, *OPTIONAL_REQUEST_FIELDS})
+def _checked_fields(payload: dict[str, Any], operation: str | None = None) -> None:
+    required = (*REQUEST_FIELDS, *OPERATION_FIELDS.get(operation or "", ()))
+    missing = [name for name in required if name not in payload]
+    unknown = sorted(set(payload) - {*required, *OPTIONAL_REQUEST_FIELDS})
     if not missing and not unknown:
         return
     detail = ", ".join(
@@ -131,6 +154,10 @@ def _checked_fields(payload: dict[str, Any]) -> None:
 
 
 def _checked_operation(payload: dict[str, Any]) -> str:
+    if "operation" not in payload:
+        # A request that named no operation is a malformed request, not a
+        # request for something Facet does not do.
+        _checked_fields(payload)
     operation = payload["operation"]
     if not isinstance(operation, str) or operation not in SUPPORTED_OPERATIONS:
         raise _reject(
@@ -180,14 +207,24 @@ def parse_request(raw: bytes) -> RemoteRequest:
     if not isinstance(payload, dict):
         raise _reject("invalid_request", "request was not a JSON object")
     # Version first: a future protocol must be told the version is wrong rather
-    # than that its new fields are unknown.
+    # than that its new fields are unknown. The operation comes next, because
+    # which fields belong in a request depends on which operation it names.
     _checked_version(payload)
-    _checked_fields(payload)
+    operation = _checked_operation(payload)
+    _checked_fields(payload, operation)
     constraints = _checked_constraints(payload)
+    payloads: dict[str, Any] = {}
+    if operation == "generate_text":
+        payloads["prompt"] = _checked_prompt(payload)
+    else:
+        try:
+            payloads["problem"] = parse_problem(payload["problem"])
+        except SolveRefused as error:
+            raise _reject("invalid_request", str(error)) from error
     return RemoteRequest(
-        operation=_checked_operation(payload),
+        operation=operation,
         request_id=_checked_request_id(payload),
-        prompt=_checked_prompt(payload),
+        **payloads,
         **constraints,
     )
 
@@ -211,32 +248,56 @@ def _backend_for(
     raise _reject("constraint_unsatisfied", "no Facet accelerator is available")
 
 
+def _model_runner(request: RemoteRequest, adapters: dict[str, BackendAdapter], run):
+    """Execute a prompt under this request's constraints, or refuse.
+
+    The backend is chosen when the model is actually about to run, not when the
+    request arrives. That distinction is what lets an exact solve answer a
+    request that required an accelerator: it required one of the *model*, and
+    no model ran.
+    """
+
+    def execute_prompt(prompt: str) -> RunResult:
+        backend = _backend_for(request, adapters)
+        try:
+            result = run(prompt, backend, adapters=adapters)
+        except FacetRuntimeError as error:
+            raise _reject("execution_failed", str(error)) from error
+        except ValueError as error:
+            raise _reject("invalid_request", str(error)) from error
+        # The constraint is checked again against what actually happened. Facet
+        # states where the work ran, so it must also be the thing that refuses
+        # when that is not where the caller required it to run.
+        if request.accelerator_required and result.actual_backend not in ACCELERATORS:
+            raise _reject(
+                "constraint_unsatisfied",
+                f"execution ran on {result.actual_backend}, which is not an accelerator",
+            )
+        if result.fallback and not request.allow_fallback:
+            raise _reject(
+                "constraint_unsatisfied", "execution fell back to another path"
+            )
+        return result
+
+    return execute_prompt
+
+
 def execute(
     request: RemoteRequest,
     *,
     adapters: dict[str, BackendAdapter] | None = None,
     run=run_prompt,
 ) -> dict[str, Any]:
-    """Run one validated request and return the full runtime result."""
+    """Run one validated request and return the full result."""
     adapter_map = dict(adapters or default_adapters())
-    backend = _backend_for(request, adapter_map)
+    reason = _model_runner(request, adapter_map, run)
+    if request.operation == "generate_text":
+        return reason(request.prompt).to_dict()
+    assert request.problem is not None  # parse_request guarantees it
     try:
-        result = run(request.prompt, backend, adapters=adapter_map)
-    except FacetRuntimeError as error:
-        raise _reject("execution_failed", str(error)) from error
-    except ValueError as error:
-        raise _reject("invalid_request", str(error)) from error
-    # The constraint is checked again against what actually happened. Facet
-    # states where the work ran, so it must also be the thing that refuses when
-    # that is not where the caller required it to run.
-    if request.accelerator_required and result.actual_backend not in ACCELERATORS:
-        raise _reject(
-            "constraint_unsatisfied",
-            f"execution ran on {result.actual_backend}, which is not an accelerator",
-        )
-    if result.fallback and not request.allow_fallback:
-        raise _reject("constraint_unsatisfied", "execution fell back to another path")
-    return result.to_dict()
+        return solve_math(request.problem, reason=reason)
+    except SolveRefused as error:
+        raise _reject(error.kind, str(error)) from error
 
 
 def success_envelope(

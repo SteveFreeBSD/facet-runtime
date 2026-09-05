@@ -53,7 +53,7 @@ runtime, a model, or a device. Facet chooses where the work runs and reports
 what it actually did.
 
 ```bash
-echo '{"facet_protocol_version": 1, "operation": "generate_text",
+echo '{"facet_protocol_version": 2, "operation": "generate_text",
        "request_id": "demo-1", "prompt": "Reply with one short sentence.",
        "constraints": {"accelerator_required": true}}' | facet-remote
 ```
@@ -66,11 +66,16 @@ Facet refuses a result that broke the constraint it accepted.
 
 | Request field            | Required | Meaning                                  |
 | ------------------------ | -------- | ---------------------------------------- |
-| `facet_protocol_version` | yes      | Exactly `1`.                             |
-| `operation`              | yes      | One of `generate_text`.                  |
+| `facet_protocol_version` | yes      | Exactly `2`.                             |
+| `operation`              | yes      | `generate_text` or `solve_math`.         |
 | `request_id`             | yes      | 1-64 of `A-Z a-z 0-9 . _ : -`; echoed back. |
-| `prompt`                 | yes      | Non-empty, at most 12 KiB.               |
+| `prompt`                 | `generate_text` | Non-empty, at most 12 KiB.        |
+| `problem`                | `solve_math` | The question; see below.             |
 | `constraints`            | no       | `accelerator_required`, `allow_fallback`; booleans. |
+
+Each operation takes its own payload and no other: a `solve_math` request
+carrying a `prompt` is not a request Facet half-understands, it is a request
+for something else, and is refused.
 
 A request is validated strictly: an unknown field, an unknown constraint, a
 wrong type, or more than 16 KiB is refused before anything executes. A success
@@ -78,17 +83,98 @@ carries `status: "ok"` and the whole `RunResult` -- including `metrics` and
 `evidence` -- under `result`. A failure carries `status: "error"` and an
 `error` object whose `kind` is one of `invalid_request`,
 `unsupported_version`, `unsupported_operation`, `constraint_unsatisfied`,
-`execution_failed`, or `internal_error`. The helper exits 0 for a success and 1
-for a structured failure, and never writes an answer alongside an error.
+`execution_failed`, `unusable_result`, or `internal_error`. The helper exits 0
+for a success and 1 for a structured failure, and never writes an answer
+alongside an error.
 
 Adding a field to a response is a compatible change; consumers are expected to
 ignore fields they do not know. Adding or changing a request field, an
 operation, or a constraint is a protocol version change.
 
-Routing today is the fixed device preference described above. When Facet later
-gains a real router, it takes over `_backend_for` in `remote.py`; the wire
-contract does not move, because a consumer already asks for a constraint rather
-than a device.
+*Device* routing today is the fixed preference described above. When Facet
+later gains a real device router, it takes over `_backend_for` in `remote.py`;
+the wire contract does not move, because a consumer already asks for a
+constraint rather than a device.
+
+## Solver routing
+
+`solve_math` is the operation for a consumer that has a *question* rather than
+a prompt. It hands over the instruction in words, the exact expressions the
+question is about, and how many separate values the answer takes — and Facet
+decides how it gets answered.
+
+```bash
+echo '{"facet_protocol_version": 2, "operation": "solve_math",
+       "request_id": "demo-2",
+       "problem": {"instruction": "Simplify. Express your answer using rational exponents.",
+                   "expressions": ["y^{3/4} \\cdot y^{2/5}"], "answer_parts": 1}}' | facet-remote
+```
+
+That decision is Facet's, and it is made in `src/facet_runtime/solve.py`. The
+deterministic solvers in `src/facet_runtime/exact/` run first: they read the
+question's own verb, run the exact SymPy operation that matches, and check the
+answer against its own input. Anything they settle is settled in a millisecond,
+with no model, no accelerator and no network, and the answer is checkable
+rather than merely plausible. Only what genuinely falls past them reaches a
+reasoning model, and the reason it fell past is carried out with the result.
+
+```json
+{"route": "exact",
+ "answer": {"display": "y^(23/20)", "entry": "y^(23/20)", "parts": [],
+            "entry_mode": "auto"},
+ "provenance": {"source": "Facet Exact", "method": "SymPy exact symbolic",
+                "router": "solved", "router_detail": "",
+                "runtime": "SymPy 1.14.0", "model": null, "device": null,
+                "requested_backend": null, "actual_backend": null,
+                "elapsed_ms": 1.4, "fallback": false, "metrics": {},
+                "evidence": {"source": "facet exact solver", "model_calls": 0}}}
+```
+
+A declined question comes back with `"route": "reasoning"`, a `router_detail`
+naming the gap, and the ordinary model provenance — `source` reads
+`Facet Reasoning · GPU`. Every field is present on both routes, and null on the
+one it does not apply to: an exact solve names no model and no processor,
+because none took part.
+
+| `problem` field | Required | Meaning |
+| --------------- | -------- | ------- |
+| `instruction`   | yes      | The question in words, at most 4000 characters. |
+| `expressions`   | yes      | 1 to 8 exact expressions, at most 2000 characters each. |
+| `answer_parts`  | no       | 1 to 4 separate values the answer takes. Default 1. |
+| `label`         | no       | The question's own label, at most 200 characters. |
+
+There is deliberately no way to describe where a question came from. A problem
+has those four fields and no others, so a consumer that owns a browser cannot
+hand over a document, an element, a picture, or an action even by accident.
+
+An answer stays structured. `entry` carries the single value a one-value
+question takes and `parts` the separate values when it takes more than one;
+exactly one of them is populated. `entry_mode` says how literally to take a
+value — `verbatim`, `math`, or `auto` — because writing a value into whatever
+input a consumer owns is the consumer's business and not Facet's.
+
+`accelerator_required` is a statement about where a *model* runs. An exact
+solve engages no backend at all, so it satisfies the constraint by never
+needing one and reports `actual_backend` as null rather than claiming a
+processor it did not use. Nothing is substituted quietly: `route` names what
+happened on every result.
+
+A reply that carries no final answer, or the wrong number of separate answers,
+is refused with `unusable_result` rather than returned. An answer of the wrong
+shape is worse than no answer, because a consumer would put it somewhere.
+
+### Deploying a protocol change
+
+`facet-remote` on the host is a `uv tool` install, not the working tree, so a
+protocol change reaches a consumer only after:
+
+```bash
+uv tool install --force --reinstall .
+```
+
+A helper left at the older version refuses every request from the newer client
+with `unsupported_version` rather than answering part of it, which is the right
+failure but is easy to mistake for a transport problem.
 
 ## Model assignment
 

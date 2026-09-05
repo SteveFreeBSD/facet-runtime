@@ -109,7 +109,7 @@ def test_metrics_and_evidence_reach_the_consumer_unaltered() -> None:
     assert json.loads(json.dumps(envelope))["result"]["evidence"] == EVIDENCE
 
 
-@pytest.mark.parametrize("version", [0, 2, "1", 1.0, True, None])
+@pytest.mark.parametrize("version", [0, 1, 3, "2", 2.0, True, None])
 def test_a_request_of_another_protocol_version_is_refused(version) -> None:
     envelope, code = handle(
         request_bytes(facet_protocol_version=version), adapters=adapters()
@@ -143,8 +143,8 @@ def test_an_operation_outside_the_closed_set_is_refused(operation: str) -> None:
     assert "generate_text" in envelope["error"]["message"]
 
 
-def test_the_closed_set_is_one_operation() -> None:
-    assert SUPPORTED_OPERATIONS == ("generate_text",)
+def test_the_closed_set_is_two_operations() -> None:
+    assert SUPPORTED_OPERATIONS == ("generate_text", "solve_math")
 
 
 @pytest.mark.parametrize(
