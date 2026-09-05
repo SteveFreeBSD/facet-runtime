@@ -18,11 +18,12 @@ or option clicks belongs to whoever owns the page, and Facet owns no page.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from facet_runtime.exact.answer import extract_final_math
 from facet_runtime.exact.polynomial import answer_polynomial_product
+from facet_runtime.exact.regression import NotThisQuestion, regression_optimum
 from facet_runtime.exact.symbolic import (
     AbsoluteValueEquationResult,
     LinearEquationResult,
@@ -37,6 +38,11 @@ from facet_runtime.exact.symbolic import (
 #: The name the deterministic stage answers to. It is a solver, and it is named
 #: as one: a reader must never have to work out whether this was a model.
 EXACT_METHOD = "SymPy exact symbolic"
+
+#: The same solver, named for what it actually did when it fitted a curve to
+#: measured data. A reader looking at "9 and 36" should be able to see that a
+#: regression produced them, not a symbolic manipulation of something written.
+REGRESSION_METHOD = "SymPy exact least-squares regression"
 
 #: Why the deterministic stage declined, when no operation matched at all.
 #: Worded exactly as the router has always worded it, because a consumer shows
@@ -96,15 +102,30 @@ class ExactSolution:
     parts: tuple[str, ...] = ()
     entry_mode: EntryMode = "verbatim"
     method: str = EXACT_METHOD
+    #: The working, when a solver computed one worth showing: the fitted
+    #: coefficients, the turning point, the value there. Carried out as
+    #: evidence rather than folded into the answer, so a consumer can redo the
+    #: whole computation from the same inputs and compare instead of trusting.
+    evidence: dict[str, str] = field(default_factory=dict)
 
 
 def solve_exact(
-    instruction: str, expressions: list[str]
+    instruction: str,
+    expressions: list[str],
+    *,
+    points: list[tuple[str, str]] | None = None,
+    answer_parts: int = 1,
 ) -> tuple[ExactSolution | None, str]:
     """Answer the question exactly, or decline it and say why.
 
     Returns the solution and an empty reason, or None and the reason.
+
+    A question is about written expressions or about measured points, never
+    both. Points arrive when nobody wrote the function down -- it exists only
+    as the fit to the data -- and are answered by their own solver.
     """
+    if points:
+        return solve_over_points(instruction, points, answer_parts)
     if not expressions:
         return None, "no exact expression was supplied"
 
@@ -142,6 +163,46 @@ def solve_exact(
     if not final_math:
         return None, "the exact solver produced no final answer"
     return ExactSolution(display=final_math, entry=final_math, entry_mode="auto"), ""
+
+
+def solve_over_points(
+    instruction: str, points: list[tuple[str, str]], answer_parts: int
+) -> tuple[ExactSolution | None, str]:
+    """Answer a question about measured points, or decline it and say why.
+
+    The only family answered here is a curve fitted to data and then read at
+    its turning point. Its decline is worded like every other decline: the
+    reason travels out to whoever asked, so a question that fell through says
+    which gap it fell through.
+    """
+    try:
+        values, working = regression_optimum(instruction, points, answer_parts)
+    except NotThisQuestion as refusal:
+        return None, str(refusal)
+    if len(values) == 1:
+        return (
+            ExactSolution(
+                display=values[0],
+                entry=values[0],
+                entry_mode="math",
+                method=REGRESSION_METHOD,
+                evidence=working,
+            ),
+            "",
+        )
+    # Two answers stay two values. The display is only for reading; what is
+    # typed comes from the parts, and nothing downstream has to recover the
+    # boundary between them by splitting prose.
+    return (
+        ExactSolution(
+            display=", ".join(values),
+            parts=tuple(values),
+            entry_mode="math",
+            method=REGRESSION_METHOD,
+            evidence=working,
+        ),
+        "",
+    )
 
 
 def solve_vertex(expressions: list[str]) -> tuple[ExactSolution | None, str]:

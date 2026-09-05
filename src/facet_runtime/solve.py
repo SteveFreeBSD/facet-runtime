@@ -71,7 +71,10 @@ RESULT_KINDS: tuple[str, ...] = (VALUE, PARABOLA_PLAN, QUADRATIC_REGRESSION)
 #: nothing to the kind being asked for is refused rather than ignored: it is a
 #: question about something else, not a question Facet half-understands.
 PROBLEM_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
-    VALUE: (("instruction", "expressions"), ("answer_parts", "label")),
+    # A value question is about written expressions or about measured points.
+    # Which of the two is required is decided in `parse_problem`, because it is
+    # a rule about the pair rather than about either field.
+    VALUE: (("instruction",), ("expressions", "points", "answer_parts", "label")),
     PARABOLA_PLAN: (("instruction", "expressions", "graph"), ("label",)),
     QUADRATIC_REGRESSION: (("instruction", "points"), ("label",)),
 }
@@ -152,7 +155,18 @@ def parse_problem(payload: Any) -> MathProblem:
     if len(instruction) > MAX_INSTRUCTION_CHARS:
         raise SolveRefused("invalid_request", "instruction exceeds the size limit")
     expressions = payload.get("expressions", [])
-    if kind != QUADRATIC_REGRESSION and (
+    # A question is about one thing. Expressions are mathematics somebody wrote
+    # down; points are measurements nobody wrote a function for. Both at once
+    # is two questions, and neither is none -- so a value question must carry
+    # exactly one of them, and says which is missing rather than half-running.
+    if kind == VALUE and ("points" in payload) == ("expressions" in payload):
+        raise SolveRefused(
+            "invalid_request",
+            "a value question is about expressions or about points, not both "
+            "and not neither",
+        )
+    written = kind == PARABOLA_PLAN or (kind == VALUE and "points" not in payload)
+    if written and (
         not isinstance(expressions, list)
         or not 1 <= len(expressions) <= MAX_EXPRESSIONS
     ):
@@ -182,7 +196,11 @@ def parse_problem(payload: Any) -> MathProblem:
         raise SolveRefused("invalid_request", "label must be a short string")
     try:
         graph = parse_graph_context(payload["graph"]) if kind == PARABOLA_PLAN else None
-        points = parse_points(payload["points"]) if kind == QUADRATIC_REGRESSION else ()
+        points = (
+            parse_points(payload["points"])
+            if kind == QUADRATIC_REGRESSION or "points" in payload
+            else ()
+        )
     except PlanRefused as error:
         raise SolveRefused("invalid_request", str(error)) from error
     return MathProblem(
@@ -215,7 +233,9 @@ def reasoning_prompt(problem: MathProblem) -> str:
     what a value may contain; it is told nothing about fields, editors, or
     where an answer is going, because none of that is its to reason about.
     """
-    rendered = "\n".join(f"- {expression}" for expression in problem.expressions)
+    rendered = "\n".join(
+        f"- {expression}" for expression in problem.expressions
+    ) or "\n".join(f"- ({point.x}, {point.y})" for point in problem.points)
     heading = f"Question: {problem.label.strip()}\n" if problem.label.strip() else ""
     prefix = answer_prefix(problem.instruction)
     # Whoever asked has already written the variable and the equals sign, so
@@ -326,7 +346,14 @@ def _exact_result(solution: ExactSolution, elapsed_ms: float) -> dict[str, Any]:
             "metrics": {},
             # The proof that no model took part, in the same place a model run
             # proves where it ran.
-            "evidence": {"source": "facet exact solver", "model_calls": 0},
+            "evidence": {
+                "source": "facet exact solver",
+                "model_calls": 0,
+                # The working, when the solver produced one. Nested so it can
+                # never shadow the two claims above it, which are Facet's
+                # account of itself rather than of the mathematics.
+                **({"computation": solution.evidence} if solution.evidence else {}),
+            },
         },
     }
 
@@ -449,7 +476,12 @@ def solve_math(problem: MathProblem, *, reason) -> dict[str, Any]:
         return _specialist_result(
             problem, run, round((time.perf_counter() - started) * 1000, 3)
         )
-    solution, decline = solve_exact(problem.instruction, list(problem.expressions))
+    solution, decline = solve_exact(
+        problem.instruction,
+        list(problem.expressions),
+        points=[(point.x, point.y) for point in problem.points],
+        answer_parts=problem.answer_parts,
+    )
     if solution is not None:
         return _exact_result(solution, round((time.perf_counter() - started) * 1000, 3))
 

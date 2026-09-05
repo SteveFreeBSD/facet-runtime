@@ -139,12 +139,16 @@ because none took part.
 | `problem` field | Required | Meaning |
 | --------------- | -------- | ------- |
 | `instruction`   | yes      | The question in words, at most 4000 characters. |
-| `expressions`   | yes, except a regression | 1 to 8 exact expressions, at most 2000 characters each. |
+| `expressions`   | a `value` about written mathematics; `parabola_plan` | 1 to 8 exact expressions, at most 2000 characters each. |
 | `result_kind`   | no       | `value`, `parabola_plan`, or `quadratic_regression`. Default `value`. |
 | `answer_parts`  | `value` only | 1 to 4 separate values the answer takes. Default 1. |
 | `graph`         | `parabola_plan` | Normalised geometry: `family`, `orientation`, `bounds`, `snap`, `controls`. |
-| `points`        | `quadratic_regression` | 3 to 32 exact `{"x", "y"}` coordinates. |
+| `points`        | `quadratic_regression`; a `value` about data | 3 to 32 exact `{"x", "y"}` coordinates. |
 | `label`         | no       | The question's own label, at most 200 characters. |
+
+A `value` question is about `expressions` or about `points` -- mathematics
+somebody wrote down, or measurements nobody wrote a function for. Both at once
+is two questions and neither is none, so exactly one is required.
 
 Each kind takes its own fields and no others. Geometry on a regression, or
 points on a parabola, is a question about something else and is refused rather
@@ -152,12 +156,62 @@ than ignored. There is deliberately no way to describe *where* a question came
 from: a consumer that owns a browser cannot hand over a document, an element, a
 picture, or an action even by accident.
 
+### A question about data
+
+Some questions carry no expression at all: the function exists only as the fit
+to the measurements. Those are still values, and the deterministic stage still
+owns them.
+
+```bash
+echo '{"facet_protocol_version": 2, "operation": "solve_math",
+       "request_id": "demo-3",
+       "problem": {"instruction": "Treating revenue as a function of the number of photos sold, if she uses quadratic regression to fit a curve to the data, what number of photos sold and what price per photo will maximize her revenue?",
+                   "points": [{"x": "4", "y": "224"}, {"x": "5", "y": "260"},
+                              {"x": "12", "y": "288"}],
+                   "answer_parts": 2}}' | facet-remote
+```
+
+`src/facet_runtime/exact/regression.py` fits the least-squares quadratic over
+exact rationals -- three points give the interpolating parabola, more give the
+true least-squares fit, and neither is ever a decimal approximation -- then
+reads it where the instruction says to. A second answer is produced only when
+the question asks for a rate *per the same quantity the curve is a function
+of*; "per event" when the curve is a function of photos is a different
+question, and is declined rather than guessed at.
+
+```json
+{"route": "exact",
+ "answer": {"kind": "value", "display": "9, 36", "entry": "",
+            "parts": ["9", "36"], "entry_mode": "math"},
+ "provenance": {"source": "Facet Exact",
+                "method": "SymPy exact least-squares regression",
+                "router": "solved", "model": null, "actual_backend": null,
+                "elapsed_ms": 9.5, "...": "...",
+                "evidence": {"source": "facet exact solver", "model_calls": 0,
+                             "computation": {"fit": "y = -4x^2 + 72x",
+                                             "coefficients": "-4,72,0",
+                                             "direction": "maximum",
+                                             "optimum_input": "9",
+                                             "optimum_value": "324",
+                                             "rate_unit": "photo",
+                                             "rate": "324/9 = 36"}}}}
+```
+
+The working comes back as evidence, beside the proof that no model ran. It is
+there so a consumer can redo the whole computation from the same points and
+compare, rather than take the answer on trust -- which is what the Hawkes
+consumer does before either number reaches an answer box.
+
+A curve that turns the wrong way is declined, not reported: a parabola opening
+upwards has no maximum, and its vertex is the answer to the opposite question.
+
 ### Plans
 
 Two families ask for geometry rather than a value: a vertical parabola somebody
 will draw, and the coefficients of a quadratic regression over points somebody
-measured. Neither has a deterministic route -- the exact solvers answer
-expressions -- so both go straight to their specialist in
+measured. Neither has a deterministic route -- fitting a curve to draw is a
+different request from reading one that has been fitted -- so both go straight
+to their specialist in
 `src/facet_runtime/graph.py`, which owns the prompt and the reply parsing.
 
 ```json
