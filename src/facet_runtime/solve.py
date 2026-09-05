@@ -81,9 +81,9 @@ PROBLEM_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
 #: which is exactly the reparsing this exists to avoid.
 PART_LINE = re.compile(r"(?im)^\s*PART\s+(\d+)\s*:\s*(.+?)\s*$")
 
-#: The variable a formula question isolates, which a page then prints beside
-#: the answer box as `r =`. Read out of the question, so the reasoning route is
-#: told not to repeat something the page already displays.
+#: The variable a formula question isolates, which whoever asked has usually
+#: already written down as `r =`. Read out of the question, so the reasoning
+#: route is told to answer with the value alone rather than repeating it.
 ANSWER_PREFIX = re.compile(r"\bsolve\s+for\s+([A-Za-z])\b", re.IGNORECASE)
 
 
@@ -197,7 +197,7 @@ def parse_problem(payload: Any) -> MathProblem:
 
 
 def answer_prefix(instruction: str) -> str:
-    """The label a page already prints beside the box, or an empty string."""
+    """The variable a formula question isolates, or an empty string."""
     match = ANSWER_PREFIX.search(instruction)
     return match.group(1) if match else ""
 
@@ -218,11 +218,11 @@ def reasoning_prompt(problem: MathProblem) -> str:
     rendered = "\n".join(f"- {expression}" for expression in problem.expressions)
     heading = f"Question: {problem.label.strip()}\n" if problem.label.strip() else ""
     prefix = answer_prefix(problem.instruction)
-    # A page that already prints the variable and the equals sign beside the
-    # box would otherwise get them typed in a second time, literally.
+    # Whoever asked has already written the variable and the equals sign, so
+    # answering with them again would repeat what is there.
     labelled = (
-        f"The page already prints `{prefix} =` beside the answer, so give only "
-        "the value that follows it.\n"
+        f"`{prefix} =` is already written for you, so give only the value that "
+        "follows it.\n"
         if prefix
         else ""
     )
@@ -232,25 +232,25 @@ def reasoning_prompt(problem: MathProblem) -> str:
             f"This question takes {parts} separate answers.\n"
             f"Reply with exactly {parts + 1} labelled lines and nothing else, "
             "and keep every label exactly as written here:\n"
-            "FINAL ANSWER: all answers as the page would display them\n"
+            "FINAL ANSWER: all answers as they would ordinarily be written\n"
             + "".join(
                 f"PART {index}: answer number {index} by itself\n"
                 for index in range(1, parts + 1)
             )
             + "Every line must begin with its own label, including each PART "
-            "line. A PART line holds only what belongs in that one answer box: "
-            "no label repeated inside it, no variable name, no equals sign, no "
+            "line. A PART line holds only one of those answers: no label "
+            "repeated inside it, no variable name, no equals sign, no "
             '"or", no explanation.'
         )
     else:
         contract = (
             "Your entire response must be one line beginning with the exact words "
-            "FINAL ANSWER: followed by only what belongs in the Hawkes answer box. "
+            "FINAL ANSWER: followed by only the answer itself. "
             "Do not repeat the input expression or output an equals sign. Never output "
             "angle brackets or a trailing period. Do not explain."
         )
     return (
-        "Solve this Hawkes precalculus question.\n"
+        "Solve this precalculus question.\n"
         f"{heading}"
         f"Instruction: {problem.instruction}\n"
         f"Expression(s):\n{rendered}\n"

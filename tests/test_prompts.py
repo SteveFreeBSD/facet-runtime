@@ -9,6 +9,7 @@ import pytest
 from facet_runtime import prompts
 from facet_runtime.errors import FacetRuntimeError
 from facet_runtime.result import RunResult
+from facet_runtime.solve import MathProblem, reasoning_prompt
 
 CORRECT = {
     "reasoning": r"FINAL ANSWER: (-\infty,-3)\cup(-3,3)\cup(3,\infty)",
@@ -218,3 +219,76 @@ def test_the_command_leaves_zero_when_every_prompt_answers(monkeypatch, capsys) 
 
     assert run_cli(["prompts", "--live", "--case", "regression"]) == 0
     assert json.loads(capsys.readouterr().out)["all_passed"] is True
+
+
+#: Every shape `reasoning_prompt` can take. Its label, its prefix line and its
+#: multi-part contract are each built by a separate branch, and the live cases
+#: exercise only one of them, so the vocabulary gate would otherwise never see
+#: the other three.
+PROMPT_VARIANTS = (
+    MathProblem(instruction="Find the domain.", expressions=("1/(x-2)",)),
+    MathProblem(
+        instruction="Find the domain.",
+        expressions=("1/(x-2)",),
+        label="Question 4 of 12",
+    ),
+    MathProblem(
+        instruction="Solve the following formula for the indicated variable. "
+        "Solve for r.",
+        expressions=("C=2*pi*r",),
+    ),
+    MathProblem(
+        instruction="Find the x-intercepts.",
+        expressions=("3*x^2+2*x-8",),
+        answer_parts=2,
+    ),
+)
+
+
+def test_no_prompt_speaks_any_consumers_vocabulary() -> None:
+    """The prompts are Facet's, and name nobody they are being asked on behalf of.
+
+    This checks the wording Facet writes. The instruction inside a prompt is
+    the caller's own sentence and stays as it was sent; the fixtures here use
+    neutral ones so that what is left is exactly Facet's contribution.
+    """
+    for prompt in prompts.model_facing_prompts():
+        assert prompts.leaks(prompt) == (), prompt
+
+
+def test_every_branch_of_the_value_prompt_is_checked_too() -> None:
+    for variant in PROMPT_VARIANTS:
+        prompt = reasoning_prompt(variant)
+        assert prompts.leaks(prompt) == (), prompt
+
+
+def test_the_value_prompt_still_says_everything_it_has_to() -> None:
+    """Generalising the wording must not drop a requirement from the contract."""
+    plain, labelled, prefixed, multi = (
+        reasoning_prompt(variant) for variant in PROMPT_VARIANTS
+    )
+
+    assert plain.startswith("Solve this precalculus question.")
+    assert "FINAL ANSWER:" in plain and "Do not explain." in plain
+    assert "Question: Question 4 of 12" in labelled
+    assert "`r =` is already written for you" in prefixed
+    assert "This question takes 2 separate answers." in multi
+    assert "PART 1: answer number 1 by itself" in multi
+    assert "PART 2: answer number 2 by itself" in multi
+
+
+def test_the_regression_prompt_settles_the_rounding_it_used_to_argue_with() -> None:
+    """The contradiction that cost a whole output budget is decided in the prompt."""
+    prompt = prompts.render(prompts.case("regression"))
+
+    # The caller's own instruction still crosses untouched...
+    assert "Round to three decimal places." in prompt
+    # ...and the prompt says which of the two wins, so the model need not.
+    assert "NOT decimal approximations" in prompt
+    assert "even where the instruction asks for rounded ones" in prompt
+
+
+def test_the_word_check_reads_words_and_not_fragments() -> None:
+    assert prompts.leaks("Find the domain of the function.") == ()
+    assert prompts.leaks("A box on the page") == ("box", "page")
+    assert prompts.leaks("Ethnos verifies this") == ("ethnos",)

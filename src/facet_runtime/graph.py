@@ -14,10 +14,19 @@ coordinates and never a decimal approximation -- and that is a check on the
 proves it against its own mathematics before anything is drawn, and is the
 authority that matters. Two independent checks are the point of the split.
 
-Nothing here knows what a page is. A specialist receives an instruction, the
-exact expressions it concerns, and normalised geometry -- bounds, a snap grid,
-a family -- or normalised point coordinates. There is no element, no handle,
-no picture, and no action.
+Nothing here knows what a page is, and that now includes the wording. A
+specialist receives an instruction, the exact expressions it concerns, and
+normalised geometry -- bounds, a snap grid, a family -- or normalised point
+coordinates. There is no element, no handle, no picture, and no action.
+
+The prompts name no consumer either. A model told which product is asking, or
+what will be done with its reply afterwards, has been told something it cannot
+act on and may reason about instead -- and that is not free. Telling this
+specialist that its coefficients would be "rounded for display" while also
+requiring exact ones set two of its instructions against each other, and it
+spent its entire output budget weighing them and answered nothing at all.
+Where an instruction and the schema really do disagree, the prompt now settles
+it outright rather than leaving the model to.
 """
 
 from __future__ import annotations
@@ -157,7 +166,7 @@ def parse_points(payload: Any) -> tuple[Point, ...]:
 def parabola_prompt(
     instruction: str, expressions: tuple[str, ...], context: GraphContext
 ) -> str:
-    """Ask for a parabola plan. Word for word what the consumer used to ask."""
+    """Ask for a parabola plan, in terms of the geometry and nothing else."""
     return (
         "Produce a graph plan for the exact function. Return ONLY one JSON object, "
         "no markdown, prose, code, or extra keys. Coordinates must be exact integer "
@@ -168,7 +177,7 @@ def parabola_prompt(
         '{"x":"rational","y":"rational"}]}. '
         "Derive the vertex, opening and two symmetric defining points from the function. "
         "First point must be right of vertex, second left. Prefer one unit horizontal "
-        "offset if it fits the bounds and snap grid. You have no browser actions.\n"
+        "offset if it fits the bounds and snap grid. You have no actions available.\n"
         + json.dumps(
             {
                 "instruction": instruction,
@@ -180,14 +189,20 @@ def parabola_prompt(
 
 
 def regression_prompt(instruction: str, points: tuple[Point, ...]) -> str:
-    """Ask for exact regression coefficients, in the consumer's own words."""
+    """Ask for exact regression coefficients over the points exactly as given.
+
+    A question of this shape usually carries a rounding instruction of its own,
+    which contradicts the exact coefficients this schema requires. The prompt
+    settles that here, in one clause, because a model left to settle it spends
+    the budget doing so.
+    """
     return (
         "Find the quadratic least-squares regression y=a*x^2+b*x+c for these exact "
-        "SVG point coordinates. Return ONLY JSON with exactly this schema: "
+        "point coordinates. Return ONLY JSON with exactly this schema: "
         '{"kind":"quadratic-regression","coefficients":["a","b","c"]}. '
         "Coefficients must be exact integer or rational strings, NOT decimal "
-        "approximations. Ethnos will independently verify and round them for display. "
-        "No prose, markdown, browser commands, or extra keys.\n"
+        "approximations: give the exact coefficients even where the instruction "
+        "asks for rounded ones. No prose, markdown, or extra keys.\n"
         + json.dumps(
             {
                 "instruction": instruction,

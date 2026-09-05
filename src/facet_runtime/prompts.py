@@ -26,6 +26,7 @@ answer teaches nobody anything.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -37,6 +38,46 @@ from facet_runtime.graph import PARABOLA_PLAN, QUADRATIC_REGRESSION, GraphContex
 from facet_runtime.result import BackendName, RunResult
 from facet_runtime.runtime import default_adapters, run_prompt
 from facet_runtime.solve import MathProblem, SolveRefused, solve_math
+
+#: Vocabulary that belongs to a consumer rather than to a question. A model
+#: told which product is asking, what its reply will be drawn on, or who will
+#: check it afterwards has been handed something it cannot act on -- and it may
+#: reason about it instead. That is not a style rule here: one such phrase told
+#: the regression specialist its exact coefficients would be "rounded for
+#: display" while the schema demanded exact ones, and the model spent its whole
+#: output budget deciding which to obey and answered nothing.
+#:
+#: Matched on word boundaries, so `domain` is a domain and not a DOM.
+CONSUMER_VOCABULARY: tuple[str, ...] = (
+    "hawkes",
+    "ethnos",
+    "svg",
+    "browser",
+    "page",
+    "box",
+    "boxes",
+    "field",
+    "editor",
+    "selector",
+    "screenshot",
+    "dom",
+    "url",
+    "frame",
+    "tab",
+    "click",
+    "press",
+    "submit",
+    "button",
+)
+
+_CONSUMER_WORDS = re.compile(
+    r"\b(?:" + "|".join(CONSUMER_VOCABULARY) + r")\b", re.IGNORECASE
+)
+
+
+def leaks(prompt: str) -> tuple[str, ...]:
+    """Any consumer's vocabulary in this prompt, which should always be none."""
+    return tuple(sorted({found.lower() for found in _CONSUMER_WORDS.findall(prompt)}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,6 +254,7 @@ def check(
     row["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 3)
     row["model_calls"] = len(sent)
     row["prompt_chars"] = len(sent[0]) if sent else 0
+    row["leaks"] = leaks(sent[0]) if sent else ()
     if keep_prompt and sent:
         row["prompt"] = sent[0]
     row["expected_met"] = (
@@ -263,6 +305,7 @@ def render_all(cases: tuple[PromptCase, ...] = CASES) -> dict[str, Any]:
                 "note": subject.note,
                 "result_kind": subject.problem.result_kind,
                 "reaches_a_model": render(subject) is not None,
+                "leaks": leaks(render(subject) or ""),
                 "prompt": render(subject),
             }
             for subject in cases
@@ -278,11 +321,13 @@ def model_facing_prompts() -> tuple[str, ...]:
 
 __all__ = [
     "CASES",
+    "CONSUMER_VOCABULARY",
     "PromptCase",
     "case",
     "check",
     "check_all",
     "contains",
+    "leaks",
     "model_facing_prompts",
     "render",
     "render_all",
