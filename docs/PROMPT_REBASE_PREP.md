@@ -1,5 +1,11 @@
 # Prompt rebaseline: evidence pack
 
+> **Superseded in part.** This was written before the work, and §1-§7 describe
+> the state as it was then: the old prompt wording, the old model assignment,
+> and a failure whose cause was still unknown. It is kept as the record of what
+> was known beforehand. §8, at the end, records what the failure turned out to
+> be and what changed. Read that first if you want the current state.
+
 Preparation only. Nothing here changes production behaviour, and no active
 prompt was edited to write it. Heads at the time of writing:
 
@@ -356,7 +362,103 @@ cd /home/steve/apps/facet-runtime
 uv tool install --force --reinstall .
 ```
 
-## 8. Sanity check
+## 8. Outcome (2026-09-05)
+
+### Root cause
+
+Reproduced on the first attempt, at the raw Ollama layer, with the exact
+production payload. `gpt-oss:20b` **reasons unconditionally and ignores
+`think: false`**, and Ollama counts those reasoning tokens against
+`num_predict` *ahead of* the answer. The regression case reached the cap:
+
+```text
+done_reason: 'length'   eval_count: 1024 (= num_predict)
+response:    ''          thinking: 4942 characters
+```
+
+So `response` was empty and §3's `FacetRuntimeError("Ollama returned no
+response text")` fired. Nothing was wrong with the transport, the parser, the
+installed tool, or the ownership move; the installed tree was byte-identical to
+the checkout apart from `.pyc` files, which is why the old `generate_text` path
+failed identically.
+
+What pushed *this* question over the cap and not the parabola one is visible in
+the recorded reasoning: the prompt contradicted itself. It required exact
+rational coefficients while carrying the caller's instruction to *round to three
+decimal places*, and the model spent hundreds of tokens on the conflict --
+"That is contradictory. We need to decide which instruction to follow. ... We
+need to ask for clarification?" -- before running out.
+
+Two independent contributors, both measured, both fixed:
+
+| Prompt | `think` | `num_predict` | `eval_count` | `done_reason` | Result |
+| --- | --- | --- | --- | --- | --- |
+| as shipped | `false` | 1024 | 1024 | **length** | **empty — the failure** |
+| as shipped | `low` | 1024 | 889 | stop | `["3","18","20"]` |
+| generalised | `low` | 1024 | 836 | stop | `["3","18","20"]` |
+| generalised | `false` | 4096 | 758 | stop | `["3","18","20"]` |
+
+### What changed
+
+- **`Say why a completion came back empty`** — `reasoning_effort` joins the
+  model assignment, because a budget and an effort only mean anything together
+  and a refusal the model discards is not a control. gpt-oss takes `low` and
+  2048 tokens. Every run now reports `stop_reason` and `output_token_limit`
+  beside its counts, and an empty completion says whether the budget ran out or
+  the model returned nothing — those need opposite fixes and were one sentence
+  before. The NPU assignment's note that its own empty completion's cause "was
+  not captured" is no longer true and now records the measurement.
+- **`Answer Facet's own prompts against a real model`** — `facet prompts`,
+  closing §4 and §5.4. Four cases answered by the real `solve_math`, so the
+  routing, constructors, parsers and adapters are production's. `--live` exits
+  non-zero when a prompt stops answering.
+- **`Ask in no consumer's vocabulary but Facet's own`** — all nine lines in §2
+  generalised, and the rounding contradiction settled in the prompt rather than
+  left to the model. §5.2 is closed: `CONSUMER_VOCABULARY` and `leaks()` live in
+  `prompts.py`, both repositories gate against that one list, and §5.5's three
+  unrendered branches are gated too.
+- facet-hawkes **`Let Facet word its own prompts`** — the one assertion that
+  pinned Facet's wording, and the two vocabulary gates, now defer to Facet's
+  list.
+
+Candidate **A** of §6 was the closest to what shipped, plus the clause that
+settles the rounding. **C** was not needed: the budget was the cliff, not the
+prompt length.
+
+### Live results
+
+Reinstalled with `uv tool install --force --reinstall .` first; installed tree
+verified identical to the checkout.
+
+| Case | Route | Tokens | Stop | Result | Wall |
+| --- | --- | --- | --- | --- | --- |
+| regression | reasoning · GPU | 836 / 2048 | stop | `["3","18","20"]` | 44.7 s |
+| parabola | reasoning · GPU | 151 / 2048 | stop | vertex `(3,-1)`, opens up | 11.8 s |
+| reasoning | reasoning · GPU | 62 / 2048 | stop | `(-∞,-3)∪(-3,3)∪(3,∞)` | 7.3 s |
+| exact | exact | — | — | `18i`, `model_calls: 0` | 0.05 s |
+
+All four through `facet prompts --live --backend gpu` and, for the first two and
+the last, through `facet-remote` on the exact requests in §7 — the regression
+one being the command that had returned `execution_failed` three times running.
+`generate_text` was checked too. The exact case satisfies
+`accelerator_required: true` with `actual_backend: null`, unchanged.
+
+The diagnosis was confirmed live as well, by squeezing the budget to 32 tokens:
+
+```text
+Ollama stopped gpt-oss:20b on its output cap after 32 of 32 tokens, all of it
+internal reasoning (67 characters of it), so it never wrote an answer; raise
+max_output_tokens or lower reasoning_effort for this assignment
+```
+
+### Still open
+
+§5.1 (no prompt is snapshot-tested) and §5.3 (no recorded model reply for the
+regression) are narrowed rather than closed: `facet prompts` renders each
+prompt for diffing and `--live` checks the reply, but no golden file pins the
+bytes. §5.6 stands as correct by design.
+
+## 9. Sanity check
 
 Both working trees clean, both heads unchanged from the top of this document.
 Confirm before starting:
