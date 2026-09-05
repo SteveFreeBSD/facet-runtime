@@ -1,0 +1,266 @@
+"""The two graph specialists Facet routes to, and their strict reply parsing.
+
+Most questions want a value. Two families want a *plan*: a vertical parabola
+that a consumer will draw, and the coefficients of a quadratic regression over
+points a consumer measured. Neither has a deterministic route here -- the exact
+solvers answer expressions, not geometry -- so both are reasoned, and what
+comes back is a structured proposal rather than an answer.
+
+The distinction matters and is the whole reason these are separate operations.
+Facet proposes; it does not prove. A plan leaves here having been parsed
+strictly -- exact schema, no extra or duplicate keys, exact integer or rational
+coordinates and never a decimal approximation -- and that is a check on the
+*model*, not a warrant. Whoever owns the surface the plan will be drawn on
+proves it against its own mathematics before anything is drawn, and is the
+authority that matters. Two independent checks are the point of the split.
+
+Nothing here knows what a page is. A specialist receives an instruction, the
+exact expressions it concerns, and normalised geometry -- bounds, a snap grid,
+a family -- or normalised point coordinates. There is no element, no handle,
+no picture, and no action.
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import re
+from dataclasses import dataclass
+from typing import Any
+
+#: The result kinds a consumer may ask for beyond an ordinary value.
+PARABOLA_PLAN = "parabola_plan"
+QUADRATIC_REGRESSION = "quadratic_regression"
+
+#: An exact integer or rational, written as a string. A decimal is refused:
+#: `0.333` is not a third, and a plan proved against exact mathematics cannot
+#: be built out of values that were already rounded.
+RATIONAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?\Z")
+
+#: The one graph family and control layout these specialists support. Growing
+#: either is a new specialist, not a looser check on this one.
+GRAPH_FAMILY = "parabola"
+GRAPH_ORIENTATION = "vertical"
+GRAPH_CONTROLS = "vertex-and-symmetric-points"
+
+MIN_REGRESSION_POINTS = 3
+MAX_REGRESSION_POINTS = 32
+
+
+class PlanRefused(ValueError):
+    """A specialist's input or its reply did not match the contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class GraphContext:
+    """Normalised geometry: what the grid is, never what the page is."""
+
+    family: str
+    orientation: str
+    bounds: tuple[float, float, float, float]
+    snap: tuple[float, float]
+    controls: str
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "family": self.family,
+            "orientation": self.orientation,
+            "bounds": list(self.bounds),
+            "snap": list(self.snap),
+            "controls": self.controls,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Point:
+    """One measured coordinate, exact and already normalised."""
+
+    x: str
+    y: str
+
+    def as_json(self) -> dict[str, str]:
+        return {"x": self.x, "y": self.y}
+
+
+def _number(value: Any, where: str) -> float:
+    # `True` is an int in Python, so the type is checked before the value.
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise PlanRefused(f"{where} must be a number")
+    if not math.isfinite(value):
+        raise PlanRefused(f"{where} must be finite")
+    return float(value)
+
+
+def _rational(value: Any, where: str) -> str:
+    if not isinstance(value, str) or not RATIONAL.fullmatch(value):
+        raise PlanRefused(f"{where} must be an exact integer or rational string")
+    return value
+
+
+def _exact_keys(payload: Any, expected: tuple[str, ...], where: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise PlanRefused(f"{where} must be an object")
+    if set(payload) != set(expected):
+        raise PlanRefused(f"{where} must carry exactly {', '.join(expected)}")
+    return payload
+
+
+def parse_graph_context(payload: Any) -> GraphContext:
+    """Read the geometry a parabola plan is drawn on, or refuse it."""
+    fields = _exact_keys(
+        payload, ("family", "orientation", "bounds", "snap", "controls"), "graph"
+    )
+    if fields["family"] != GRAPH_FAMILY or fields["orientation"] != GRAPH_ORIENTATION:
+        raise PlanRefused(f"only a {GRAPH_ORIENTATION} {GRAPH_FAMILY} is supported")
+    if fields["controls"] != GRAPH_CONTROLS:
+        raise PlanRefused(f"only {GRAPH_CONTROLS} controls are supported")
+    bounds, snap = fields["bounds"], fields["snap"]
+    if not isinstance(bounds, list) or len(bounds) != 4:
+        raise PlanRefused("graph bounds must be four numbers")
+    if not isinstance(snap, list) or len(snap) != 2:
+        raise PlanRefused("graph snap must be two numbers")
+    edges = tuple(_number(value, "a graph bound") for value in bounds)
+    spacing = tuple(_number(value, "a graph snap") for value in snap)
+    if edges[0] >= edges[1] or edges[2] >= edges[3]:
+        raise PlanRefused("graph bounds must be ordered")
+    if min(spacing) <= 0:
+        raise PlanRefused("graph snap must be positive")
+    return GraphContext(
+        family=fields["family"],
+        orientation=fields["orientation"],
+        bounds=edges,  # type: ignore[arg-type]
+        snap=spacing,  # type: ignore[arg-type]
+        controls=fields["controls"],
+    )
+
+
+def parse_points(payload: Any) -> tuple[Point, ...]:
+    """Read the measured coordinates a regression is fitted to, or refuse them."""
+    if not isinstance(payload, list):
+        raise PlanRefused("points must be a list")
+    if not MIN_REGRESSION_POINTS <= len(payload) <= MAX_REGRESSION_POINTS:
+        raise PlanRefused(
+            f"a regression takes {MIN_REGRESSION_POINTS} to "
+            f"{MAX_REGRESSION_POINTS} points"
+        )
+    read = []
+    for item in payload:
+        fields = _exact_keys(item, ("x", "y"), "a point")
+        read.append(
+            Point(
+                _rational(fields["x"], "a point x"), _rational(fields["y"], "a point y")
+            )
+        )
+    return tuple(read)
+
+
+def parabola_prompt(
+    instruction: str, expressions: tuple[str, ...], context: GraphContext
+) -> str:
+    """Ask for a parabola plan. Word for word what the consumer used to ask."""
+    return (
+        "Produce a graph plan for the exact function. Return ONLY one JSON object, "
+        "no markdown, prose, code, or extra keys. Coordinates must be exact integer "
+        'or rational STRINGS (for example "-3/2"). Required schema: '
+        '{"kind":"parabola","orientation":"vertical","opening":"up or down",'
+        '"vertex":{"x":"rational","y":"rational"},'
+        '"points":[{"x":"rational","y":"rational"},'
+        '{"x":"rational","y":"rational"}]}. '
+        "Derive the vertex, opening and two symmetric defining points from the function. "
+        "First point must be right of vertex, second left. Prefer one unit horizontal "
+        "offset if it fits the bounds and snap grid. You have no browser actions.\n"
+        + json.dumps(
+            {
+                "instruction": instruction,
+                "exact_expression": list(expressions),
+                "graph_answer": context.as_json(),
+            }
+        )
+    )
+
+
+def regression_prompt(instruction: str, points: tuple[Point, ...]) -> str:
+    """Ask for exact regression coefficients, in the consumer's own words."""
+    return (
+        "Find the quadratic least-squares regression y=a*x^2+b*x+c for these exact "
+        "SVG point coordinates. Return ONLY JSON with exactly this schema: "
+        '{"kind":"quadratic-regression","coefficients":["a","b","c"]}. '
+        "Coefficients must be exact integer or rational strings, NOT decimal "
+        "approximations. Ethnos will independently verify and round them for display. "
+        "No prose, markdown, browser commands, or extra keys.\n"
+        + json.dumps(
+            {
+                "instruction": instruction,
+                "points": [point.as_json() for point in points],
+            }
+        )
+    )
+
+
+def strict_json(text: str) -> Any:
+    """Parse one JSON object and refuse a repeated key.
+
+    A duplicate key is not a formatting quirk. `json.loads` keeps the last one
+    silently, so a reply naming a vertex twice would be read as whichever came
+    last, and nothing downstream could tell that a choice had been made.
+    """
+
+    def unique(pairs):
+        seen: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in seen:
+                raise PlanRefused(f"the reply names {key} more than once")
+            seen[key] = value
+        return seen
+
+    try:
+        return json.loads(text, object_pairs_hook=unique)
+    except json.JSONDecodeError as error:
+        raise PlanRefused(f"the reply was not one JSON object: {error}") from error
+
+
+def parse_parabola_plan(text: str) -> dict[str, Any]:
+    """Read a proposed parabola plan out of a reply, or refuse the reply."""
+    fields = _exact_keys(
+        strict_json(text),
+        ("kind", "orientation", "opening", "vertex", "points"),
+        "a parabola plan",
+    )
+    if fields["kind"] != GRAPH_FAMILY or fields["orientation"] != GRAPH_ORIENTATION:
+        raise PlanRefused(f"a plan must be a {GRAPH_ORIENTATION} {GRAPH_FAMILY}")
+    if fields["opening"] not in ("up", "down"):
+        raise PlanRefused("a parabola opens up or down")
+    points = fields["points"]
+    if not isinstance(points, list) or len(points) != 2:
+        raise PlanRefused("a parabola plan takes exactly two defining points")
+    return {
+        "kind": fields["kind"],
+        "orientation": fields["orientation"],
+        "opening": fields["opening"],
+        "vertex": _plan_point(fields["vertex"], "the vertex"),
+        "points": [_plan_point(point, "a defining point") for point in points],
+    }
+
+
+def _plan_point(payload: Any, where: str) -> dict[str, str]:
+    fields = _exact_keys(payload, ("x", "y"), where)
+    return {
+        "x": _rational(fields["x"], f"{where} x"),
+        "y": _rational(fields["y"], f"{where} y"),
+    }
+
+
+def parse_regression_plan(text: str) -> dict[str, Any]:
+    """Read proposed regression coefficients out of a reply, or refuse it."""
+    fields = _exact_keys(
+        strict_json(text), ("kind", "coefficients"), "a regression plan"
+    )
+    if fields["kind"] != "quadratic-regression":
+        raise PlanRefused("a regression plan must be a quadratic regression")
+    coefficients = fields["coefficients"]
+    if not isinstance(coefficients, list) or len(coefficients) != 3:
+        raise PlanRefused("a quadratic regression has exactly three coefficients")
+    return {
+        "kind": fields["kind"],
+        "coefficients": [_rational(value, "a coefficient") for value in coefficients],
+    }

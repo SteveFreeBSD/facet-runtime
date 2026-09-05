@@ -139,13 +139,51 @@ because none took part.
 | `problem` field | Required | Meaning |
 | --------------- | -------- | ------- |
 | `instruction`   | yes      | The question in words, at most 4000 characters. |
-| `expressions`   | yes      | 1 to 8 exact expressions, at most 2000 characters each. |
-| `answer_parts`  | no       | 1 to 4 separate values the answer takes. Default 1. |
+| `expressions`   | yes, except a regression | 1 to 8 exact expressions, at most 2000 characters each. |
+| `result_kind`   | no       | `value`, `parabola_plan`, or `quadratic_regression`. Default `value`. |
+| `answer_parts`  | `value` only | 1 to 4 separate values the answer takes. Default 1. |
+| `graph`         | `parabola_plan` | Normalised geometry: `family`, `orientation`, `bounds`, `snap`, `controls`. |
+| `points`        | `quadratic_regression` | 3 to 32 exact `{"x", "y"}` coordinates. |
 | `label`         | no       | The question's own label, at most 200 characters. |
 
-There is deliberately no way to describe where a question came from. A problem
-has those four fields and no others, so a consumer that owns a browser cannot
-hand over a document, an element, a picture, or an action even by accident.
+Each kind takes its own fields and no others. Geometry on a regression, or
+points on a parabola, is a question about something else and is refused rather
+than ignored. There is deliberately no way to describe *where* a question came
+from: a consumer that owns a browser cannot hand over a document, an element, a
+picture, or an action even by accident.
+
+### Plans
+
+Two families ask for geometry rather than a value: a vertical parabola somebody
+will draw, and the coefficients of a quadratic regression over points somebody
+measured. Neither has a deterministic route -- the exact solvers answer
+expressions -- so both go straight to their specialist in
+`src/facet_runtime/graph.py`, which owns the prompt and the reply parsing.
+
+```json
+{"route": "reasoning",
+ "answer": {"kind": "parabola_plan",
+            "plan": {"kind": "parabola", "orientation": "vertical",
+                     "opening": "up", "vertex": {"x": "3", "y": "-1"},
+                     "points": [{"x": "4", "y": "0"}, {"x": "2", "y": "0"}]}},
+ "provenance": {"source": "Facet Parabola Plan · GPU", "method": "gpt-oss:20b",
+                "router": "not-run",
+                "router_detail": "a graph plan has no deterministic route",
+                "runtime": "Ollama 0.33.2", "actual_backend": "gpu", "...": "..."}}
+```
+
+A plan carries no `display`, `entry` or `parts`. It is a *proposal*: Facet
+parses it strictly -- exact schema, no extra or duplicate keys, exact integer or
+rational coordinates and never a decimal approximation -- and that is a check on
+the model rather than a warrant. Facet does not prove the geometry, because the
+authority that matters is whoever owns the surface the plan will be drawn on.
+Two independent readings of an untrusted reply is the point, and the consumer's
+is the one that decides.
+
+`router: "not-run"` says the deterministic stage was never asked, which is a
+different claim from having tried and declined. `source` names the specialist
+that ran, because which one answered is not something a reader can infer from a
+model name.
 
 An answer stays structured. `entry` carries the single value a one-value
 question takes and `parts` the separate values when it takes more than one;

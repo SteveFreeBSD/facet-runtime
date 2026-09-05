@@ -38,6 +38,19 @@ from facet_runtime.exact import (
     extract_final_math,
     solve_exact,
 )
+from facet_runtime.graph import (
+    PARABOLA_PLAN,
+    QUADRATIC_REGRESSION,
+    GraphContext,
+    PlanRefused,
+    Point,
+    parabola_prompt,
+    parse_graph_context,
+    parse_parabola_plan,
+    parse_points,
+    parse_regression_plan,
+    regression_prompt,
+)
 from facet_runtime.result import RunResult
 
 MAX_EXPRESSIONS = 8
@@ -47,6 +60,21 @@ MAX_LABEL_CHARS = 200
 MAX_ANSWER_PARTS = 4
 
 Route = Literal["exact", "reasoning"]
+
+#: What a consumer may ask to get back. `value` is an answer to write down;
+#: the other two are *plans* -- a proposal a consumer will prove for itself
+#: before it draws anything. Growing this set is a protocol change.
+VALUE = "value"
+RESULT_KINDS: tuple[str, ...] = (VALUE, PARABOLA_PLAN, QUADRATIC_REGRESSION)
+
+#: Which problem fields belong to which requested result. A field that means
+#: nothing to the kind being asked for is refused rather than ignored: it is a
+#: question about something else, not a question Facet half-understands.
+PROBLEM_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    VALUE: (("instruction", "expressions"), ("answer_parts", "label")),
+    PARABOLA_PLAN: (("instruction", "expressions", "graph"), ("label",)),
+    QUADRATIC_REGRESSION: (("instruction", "points"), ("label",)),
+}
 
 #: `PART 1: ...` from a multi-part reasoning reply. Structured on purpose: the
 #: alternative is recovering mathematical boundaries out of display prose,
@@ -78,28 +106,53 @@ class MathProblem:
     """
 
     instruction: str
-    expressions: tuple[str, ...]
+    expressions: tuple[str, ...] = ()
     answer_parts: int = 1
     label: str = ""
+    #: What the consumer asked to get back. `value` unless a specialist is
+    #: wanted, and a specialist decides what the other fields mean.
+    result_kind: str = VALUE
+    #: Normalised geometry for a parabola plan: a grid, never a page.
+    graph: GraphContext | None = None
+    #: Normalised coordinates a regression is fitted to.
+    points: tuple[Point, ...] = ()
+
+
+def _checked_kind(payload: dict[str, Any]) -> str:
+    kind = payload.get("result_kind", VALUE)
+    if kind not in RESULT_KINDS:
+        raise SolveRefused(
+            "invalid_request",
+            f"result_kind must be one of {', '.join(RESULT_KINDS)}",
+        )
+    required, optional = PROBLEM_FIELDS[kind]
+    missing = [name for name in required if name not in payload]
+    unknown = sorted(set(payload) - {"result_kind", *required, *optional})
+    if missing or unknown:
+        detail = ", ".join(
+            part
+            for part in (
+                f"{kind} needs {', '.join(missing)}" if missing else "",
+                f"{kind} takes no {', '.join(unknown)}" if unknown else "",
+            )
+            if part
+        )
+        raise SolveRefused("invalid_request", f"problem fields are wrong: {detail}")
+    return kind
 
 
 def parse_problem(payload: Any) -> MathProblem:
     """Validate one problem completely, or refuse it with a reason."""
     if not isinstance(payload, dict):
         raise SolveRefused("invalid_request", "problem must be an object")
-    known = {"instruction", "expressions", "answer_parts", "label"}
-    unknown = sorted(set(payload) - known)
-    if unknown:
-        raise SolveRefused(
-            "invalid_request", f"unknown problem field: {', '.join(unknown)}"
-        )
+    kind = _checked_kind(payload)
     instruction = payload.get("instruction")
     if not isinstance(instruction, str) or not instruction.strip():
         raise SolveRefused("invalid_request", "instruction must be a non-empty string")
     if len(instruction) > MAX_INSTRUCTION_CHARS:
         raise SolveRefused("invalid_request", "instruction exceeds the size limit")
-    expressions = payload.get("expressions")
-    if (
+    expressions = payload.get("expressions", [])
+    if kind != QUADRATIC_REGRESSION and (
         not isinstance(expressions, list)
         or not 1 <= len(expressions) <= MAX_EXPRESSIONS
     ):
@@ -127,11 +180,19 @@ def parse_problem(payload: Any) -> MathProblem:
     label = payload.get("label", "")
     if not isinstance(label, str) or len(label) > MAX_LABEL_CHARS:
         raise SolveRefused("invalid_request", "label must be a short string")
+    try:
+        graph = parse_graph_context(payload["graph"]) if kind == PARABOLA_PLAN else None
+        points = parse_points(payload["points"]) if kind == QUADRATIC_REGRESSION else ()
+    except PlanRefused as error:
+        raise SolveRefused("invalid_request", str(error)) from error
     return MathProblem(
         instruction=instruction,
         expressions=tuple(expressions),
         answer_parts=parts,
         label=label,
+        result_kind=kind,
+        graph=graph,
+        points=points,
     )
 
 
@@ -219,12 +280,24 @@ def labelled_parts(text: str, expected: int) -> list[str] | None:
 def _answer(
     display: str, entry: str, parts: tuple[str, ...], entry_mode: EntryMode
 ) -> dict[str, Any]:
+    """One answer to write down, tagged with the kind it is."""
     return {
+        "kind": VALUE,
         "display": display,
         "entry": entry,
         "parts": list(parts),
         "entry_mode": entry_mode,
     }
+
+
+def _plan_answer(kind: str, plan: dict[str, Any]) -> dict[str, Any]:
+    """One proposed plan, carrying no value at all.
+
+    A plan result deliberately has no `display`, `entry` or `parts`. There is
+    nothing here for a consumer to write into an answer box, and leaving room
+    for one would let a reasoned proposal arrive shaped like a settled answer.
+    """
+    return {"kind": kind, "plan": plan}
 
 
 def _exact_result(solution: ExactSolution, elapsed_ms: float) -> dict[str, Any]:
@@ -299,14 +372,79 @@ def _reasoning_result(
     }
 
 
+#: Each specialist: how it asks, how it reads a reply, what to call it, and
+#: why the deterministic stage was not the one that ran.
+SPECIALISTS: dict[str, tuple[Any, Any, str, str]] = {
+    PARABOLA_PLAN: (
+        lambda problem: parabola_prompt(
+            problem.instruction, problem.expressions, problem.graph
+        ),
+        parse_parabola_plan,
+        "Parabola Plan",
+        "a graph plan has no deterministic route",
+    ),
+    QUADRATIC_REGRESSION: (
+        lambda problem: regression_prompt(problem.instruction, problem.points),
+        parse_regression_plan,
+        "Quadratic Regression",
+        "a quadratic regression has no deterministic route",
+    ),
+}
+
+
+def _specialist_result(
+    problem: MathProblem, run: RunResult, elapsed_ms: float
+) -> dict[str, Any]:
+    _, read_reply, identity, detail = SPECIALISTS[problem.result_kind]
+    try:
+        plan = read_reply(run.text)
+    except PlanRefused as error:
+        # Fail closed. A plan that does not match its schema exactly is not a
+        # plan a consumer may go on to prove; it is a reply about something
+        # else, and repairing it here would be inventing geometry.
+        raise SolveRefused("unusable_result", str(error)) from error
+    return {
+        "route": "reasoning",
+        "answer": _plan_answer(problem.result_kind, plan),
+        "provenance": {
+            # Identifiable as the specialist it was, on the processor that ran
+            # it. Which specialist answered is not a detail a reader can infer
+            # from a model name.
+            "source": f"Facet {identity} · {run.actual_backend.upper()}",
+            "method": run.model,
+            # The deterministic solvers answer expressions, not geometry, so
+            # they were not asked. Saying they declined would be a claim they
+            # were tried, and saying they solved it would be a lie.
+            "router": "not-run",
+            "router_detail": detail,
+            "runtime": run.runtime,
+            "model": run.model,
+            "device": run.device,
+            "requested_backend": run.requested_backend,
+            "actual_backend": run.actual_backend,
+            "elapsed_ms": elapsed_ms,
+            "fallback": run.fallback,
+            "metrics": run.to_dict()["metrics"],
+            "evidence": dict(run.evidence),
+        },
+    }
+
+
 def solve_math(problem: MathProblem, *, reason) -> dict[str, Any]:
     """Route one question, run it, and return the structured result.
 
     `reason(prompt)` executes the reasoning route under whatever constraints
     the caller established, and is only called when the deterministic stage
-    declines.
+    declines -- or, for a specialist, when there was no deterministic stage to
+    decline in the first place.
     """
     started = time.perf_counter()
+    if problem.result_kind != VALUE:
+        ask, *_ = SPECIALISTS[problem.result_kind]
+        run = reason(ask(problem))
+        return _specialist_result(
+            problem, run, round((time.perf_counter() - started) * 1000, 3)
+        )
     solution, decline = solve_exact(problem.instruction, list(problem.expressions))
     if solution is not None:
         return _exact_result(solution, round((time.perf_counter() - started) * 1000, 3))
