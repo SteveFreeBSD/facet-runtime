@@ -21,6 +21,7 @@ from facet_runtime.exact.router import (
     solve_exact,
     solve_one_equation,
     solve_over_points,
+    solve_points_on_quadratic,
     solve_vertex,
 )
 
@@ -44,5 +45,6 @@ __all__ = [
     "solve_exact",
     "solve_one_equation",
     "solve_over_points",
+    "solve_points_on_quadratic",
     "solve_vertex",
 ]

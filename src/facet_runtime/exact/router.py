@@ -63,6 +63,22 @@ _PROSE = re.compile(r"[A-Za-z][A-Za-z ]*")
 _VERTEX = re.compile(
     r"\b(?:find|identify|determine)\s+(?:the\s+)?vertex\b", re.IGNORECASE
 )
+_POINTS_ON_QUADRATIC = re.compile(
+    r"""
+    \s*(?:find|give|identify|determine|provide)\s+
+    (?P<count>one|two|three|four|[1-4])\s+(?P<noun>points?)\s+
+    on\s+(?:the\s+)?(?:graph|parabola)\s+
+    (?:other\s+than|excluding)\s+
+    (?:
+      (?:the\s+)?vertex\s+and\s+(?:the\s+)?x[- ]intercepts?
+      |
+      (?:the\s+)?x[- ]intercepts?\s+and\s+(?:the\s+)?vertex
+    )
+    [.!?]?\s*
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_POINT_COUNTS = {"one": 1, "two": 2, "three": 3, "four": 4}
 _POLYNOMIAL_CHOICE = re.compile(
     r"polynomial\s+or\s+a\s+non[- ]polynomial", re.IGNORECASE
 )
@@ -128,6 +144,10 @@ def solve_exact(
         return solve_over_points(instruction, points, answer_parts)
     if not expressions:
         return None, "no exact expression was supplied"
+
+    point_count = requested_quadratic_point_count(instruction)
+    if point_count is not None:
+        return solve_points_on_quadratic(expressions, point_count, answer_parts)
 
     if _VERTEX.search(instruction):
         return solve_vertex(expressions)
@@ -217,6 +237,95 @@ def solve_vertex(expressions: list[str]) -> tuple[ExactSolution | None, str]:
     # A vertex is one ordered pair, and its parentheses are part of the answer.
     pair = f"({h},{k})"
     return ExactSolution(display=pair, entry=pair), ""
+
+
+def requested_quadratic_point_count(instruction: str) -> int | None:
+    """Read the bounded live point request, or decline ambiguous wording."""
+    match = _POINTS_ON_QUADRATIC.fullmatch(instruction)
+    if match is None:
+        return None
+    count_text = match.group("count").lower()
+    count = _POINT_COUNTS.get(
+        count_text, int(count_text) if count_text.isdigit() else 0
+    )
+    if (count == 1) != (match.group("noun").lower() == "point"):
+        return None
+    return count
+
+
+def solve_points_on_quadratic(
+    expressions: list[str], requested: int, answer_parts: int
+) -> tuple[ExactSolution | None, str]:
+    """Choose and prove simple points away from a quadratic's named landmarks."""
+    import sympy
+
+    if requested != answer_parts:
+        return None, (
+            f"point request asks for {requested} answers but the answer shape "
+            f"requires {answer_parts}"
+        )
+    if len(expressions) != 1:
+        return None, "points on a quadratic require one exact function"
+    try:
+        a, b, c = quadratic_coefficients(expressions[0])
+    except (ValueError, SyntaxError, TypeError, ZeroDivisionError):
+        return None, "points on a quadratic require a rational quadratic"
+
+    x = sympy.Symbol("x", real=True)
+    polynomial = a * x**2 + b * x + c
+    vertex_x = -b / (2 * a)
+    vertex_y = sympy.factor(polynomial.subs(x, vertex_x))
+    discriminant = sympy.factor(b**2 - 4 * a * c)
+    if discriminant.is_negative:
+        intercepts: tuple[sympy.Expr, ...] = ()
+    elif discriminant.is_nonnegative:
+        root = sympy.sqrt(discriminant)
+        left = sympy.simplify((-b - root) / (2 * a))
+        right = sympy.simplify((-b + root) / (2 * a))
+        intercepts = (left,) if sympy.simplify(left - right) == 0 else (left, right)
+    else:
+        return None, "the real x-intercepts could not be determined exactly"
+
+    excluded = (vertex_x, *intercepts)
+
+    def is_excluded(candidate: sympy.Expr) -> bool:
+        return any(sympy.simplify(candidate - value) == 0 for value in excluded)
+
+    candidates = [sympy.Integer(0)]
+    for distance in range(1, requested + 4):
+        candidates.extend((sympy.Integer(distance), sympy.Integer(-distance)))
+
+    points: list[tuple[sympy.Expr, sympy.Expr]] = []
+    for candidate in candidates:
+        if is_excluded(candidate):
+            continue
+        value = sympy.factor(polynomial.subs(x, candidate))
+        # Incidence and exclusion are proved over exact SymPy expressions.
+        # A failure is a refusal; an unchecked coordinate is never returned.
+        if value == 0 or sympy.simplify(polynomial.subs(x, candidate) - value) != 0:
+            continue
+        points.append((candidate, value))
+        if len(points) == requested:
+            break
+    if len(points) != requested:
+        return None, "not enough simple non-landmark points could be proved"
+
+    pairs = tuple(f"({point_x},{point_y})" for point_x, point_y in points)
+    evidence = {
+        "coefficients": ",".join(str(value) for value in (a, b, c)),
+        "vertex": f"({vertex_x},{vertex_y})",
+        "x_intercepts": ",".join(str(value) for value in intercepts) or "none",
+        "points": ",".join(pairs),
+        "incidence": "; ".join(
+            f"f({point_x})={point_y}" for point_x, point_y in points
+        ),
+    }
+    if requested == 1:
+        return ExactSolution(display=pairs[0], entry=pairs[0], evidence=evidence), ""
+    return (
+        ExactSolution(display=", ".join(pairs), parts=pairs, evidence=evidence),
+        "",
+    )
 
 
 def classify_polynomial(
