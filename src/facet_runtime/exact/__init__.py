@@ -1,6 +1,7 @@
 """Deterministic exact mathematics, the route Facet takes before reasoning."""
 
 from facet_runtime.exact.answer import extract_final_math
+from facet_runtime.exact.linear import solve_linear_function
 from facet_runtime.exact.regression import (
     NotThisQuestion,
     fit_quadratic,
@@ -22,6 +23,7 @@ from facet_runtime.exact.router import (
     solve_one_equation,
     solve_over_points,
     solve_points_on_quadratic,
+    solve_stated_linear_function,
     solve_vertex,
 )
 
@@ -43,8 +45,10 @@ __all__ = [
     "rate_unit",
     "regression_optimum",
     "solve_exact",
+    "solve_linear_function",
     "solve_one_equation",
     "solve_over_points",
     "solve_points_on_quadratic",
+    "solve_stated_linear_function",
     "solve_vertex",
 ]

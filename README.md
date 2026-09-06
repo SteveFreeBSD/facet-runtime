@@ -118,6 +118,16 @@ with no model, no accelerator and no network, and the answer is checkable
 rather than merely plausible. Only what genuinely falls past them reaches a
 reasoning model, and the reason it fell past is carried out with the result.
 
+Not every question is an expression to rewrite. Some state a *property* and ask
+for the object that has it, and those are answered from the properties rather
+than from a verb: a parabola's vertex, points on it away from its named
+landmarks, and — in `src/facet_runtime/exact/linear.py` — a linear function
+given as a slope and a point, a slope and an intercept, or two points. Two
+facts determine a line and one does not, so that solver derives `y = mx + b`
+over exact rationals, puts every stated property back into the result, and
+declines rather than answering when one of them does not hold, when the
+properties disagree, or when they leave the line undetermined.
+
 ```json
 {"route": "exact",
  "answer": {"display": "y^(23/20)", "entry": "y^(23/20)", "parts": [],

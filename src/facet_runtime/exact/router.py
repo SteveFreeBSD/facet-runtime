@@ -22,6 +22,11 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from facet_runtime.exact.answer import extract_final_math
+from facet_runtime.exact.linear import (
+    LINEAR_REQUEST,
+    render,
+    solve_linear_function,
+)
 from facet_runtime.exact.polynomial import answer_polynomial_product
 from facet_runtime.exact.regression import NotThisQuestion, regression_optimum
 from facet_runtime.exact.symbolic import (
@@ -152,6 +157,18 @@ def solve_exact(
     if _VERTEX.search(instruction):
         return solve_vertex(expressions)
 
+    # A line stated as its properties rather than written down. Two facts fix
+    # it and one does not, so this either computes both and proves every stated
+    # property against the result, or declines and names what stopped it. An
+    # instruction that names a linear function but states no property is left
+    # to the solvers below rather than claimed here.
+    if LINEAR_REQUEST.search(instruction):
+        line, refusal = solve_stated_linear_function(
+            instruction, expressions, answer_parts
+        )
+        if line is not None or refusal:
+            return line, refusal
+
     classification = classify_polynomial(instruction, expressions)
     if classification is not None:
         return classification, ""
@@ -237,6 +254,31 @@ def solve_vertex(expressions: list[str]) -> tuple[ExactSolution | None, str]:
     # A vertex is one ordered pair, and its parentheses are part of the answer.
     pair = f"({h},{k})"
     return ExactSolution(display=pair, entry=pair), ""
+
+
+def solve_stated_linear_function(
+    instruction: str, expressions: list[str], answer_parts: int
+) -> tuple[ExactSolution | None, str]:
+    """Shape a derived line as the one answer a linear-function question takes.
+
+    The mathematics and its proof are in `facet_runtime.exact.linear`. What
+    happens here is only the shaping: `mx + b` is one value, it is mathematics
+    rather than a phrase, and the working travels with it as evidence so the
+    whole derivation can be redone from the same properties.
+    """
+    line, decline = solve_linear_function(instruction, expressions, answer_parts)
+    if line is None:
+        return None, decline
+    written = render(line.slope, line.intercept)
+    return (
+        ExactSolution(
+            display=written,
+            entry=written,
+            entry_mode="math",
+            evidence=line.evidence,
+        ),
+        "",
+    )
 
 
 def requested_quadratic_point_count(instruction: str) -> int | None:
