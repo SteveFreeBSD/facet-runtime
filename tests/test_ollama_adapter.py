@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from facet_runtime import models
@@ -227,3 +229,182 @@ def test_gpu_image_request_uses_vision_model_and_schema(
     assert payloads[0]["format"]["required"] == ["transcription", "uncertainties"]
     assert payloads[0]["options"]["num_gpu"] == 999
     assert output.runtime_metadata.strict_json_schema is True
+
+
+class _FakeOllama:
+    """An Ollama whose `/api/ps` answer differs during and after a generation.
+
+    The live failure needs exactly that shape: the model answers, and by the
+    time the adapter asks where it ran, a competing load has evicted it.
+    """
+
+    def __init__(
+        self,
+        *,
+        during: list[dict] | None,
+        after: list[dict] | None,
+        appear_after: int = 0,
+        generate_s: float = 0.4,
+    ) -> None:
+        self.during = during or []
+        self.after = after or []
+        self.appear_after = appear_after
+        self.generate_s = generate_s
+        self.generating = False
+        self.polls = 0
+        self.payloads: list[dict] = []
+
+    def request(self, path: str, payload: dict | None = None) -> dict:
+        if path == "/api/version":
+            return {"version": "test"}
+        if path == "/api/ps":
+            if not self.generating:
+                return {"models": self.after}
+            self.polls += 1
+            seen = [] if self.polls <= self.appear_after else self.during
+            return {"models": seen}
+        self.payloads.append(payload or {})
+        if "prompt" not in (payload or {}):
+            return {"done_reason": "unload"}  # the adapter's _unload
+        self.generating = True
+        time.sleep(self.generate_s)
+        self.generating = False
+        return {
+            "response": "ok",
+            "done_reason": "stop",
+            "prompt_eval_count": 20,
+            "prompt_eval_duration": 100_000_000,
+            "eval_count": 40,
+            "eval_duration": 1_000_000_000,
+        }
+
+
+def _resident(model: str, vram: int = LOADED_BYTES) -> list[dict]:
+    return [{"model": model, "size": LOADED_BYTES, "size_vram": vram}]
+
+
+def _serve(monkeypatch: pytest.MonkeyPatch, server: _FakeOllama) -> _FakeOllama:
+    monkeypatch.setattr(ollama, "RESIDENCY_POLL_S", 0.02, raising=False)
+    monkeypatch.setattr(ollama, "_request_json", server.request)
+    monkeypatch.setattr(
+        ollama, "_gpu_device", lambda: "AMD Radeon 890M Graphics (RADV STRIX1)"
+    )
+    monkeypatch.setattr(ollama, "_cpu_model", lambda: "AMD Ryzen AI 9 HX 370")
+    return server
+
+
+def test_a_model_evicted_after_it_answers_is_still_proven_by_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live failure: the answer was computed on the GPU, then evicted.
+
+    Ollama serialises loads against a single GPU, so a second client asking for
+    a model that will not fit alongside this one makes the scheduler evict the
+    runner that just answered. Sampled after the fact, `/api/ps` reports the
+    replacement; measured on this machine that read blocks ~40ms against ~30us
+    for an uncontended one, which is how every occurrence was identified. The
+    weights were resident for the whole generation, so the run stands.
+    """
+    gpu_model = models.model_for("gpu")
+    server = _serve(
+        monkeypatch,
+        _FakeOllama(during=_resident(gpu_model), after=[]),
+    )
+
+    output = ollama.OllamaAdapter("gpu").run("hello")
+
+    assert output.text == "ok"
+    assert output.evidence["observed"] == "during generation"
+    assert output.evidence["device_memory_bytes"] == LOADED_BYTES
+    assert output.evidence["device_resident_fraction"] == 1.0
+    # Provenance is unchanged: still this model, on this device.
+    assert output.model == gpu_model
+    assert output.device == "AMD Radeon 890M Graphics (RADV STRIX1)"
+    assert server.payloads[0]["options"]["num_gpu"] == 999
+
+
+def test_a_cold_load_is_proven_from_the_moment_the_weights_land(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cold start: nothing is resident until the load finishes mid-generation."""
+    gpu_model = models.model_for("gpu")
+    server = _serve(
+        monkeypatch,
+        _FakeOllama(during=_resident(gpu_model), after=[], appear_after=3),
+    )
+
+    output = ollama.OllamaAdapter("gpu").run("hello")
+
+    assert output.evidence["observed"] == "during generation"
+    assert output.evidence["loaded_bytes"] == LOADED_BYTES
+    assert server.polls > 3  # it really did wait out the load
+
+
+def test_a_still_resident_model_is_judged_on_the_live_reading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The warm path is untouched: the post-generation sample still decides."""
+    gpu_model = models.model_for("gpu")
+    _serve(
+        monkeypatch,
+        _FakeOllama(during=_resident(gpu_model), after=_resident(gpu_model)),
+    )
+
+    output = ollama.OllamaAdapter("gpu").run("hello")
+
+    assert output.evidence["observed"] == "after generation"
+    assert output.evidence["device_resident_fraction"] == 1.0
+
+
+def test_a_model_that_never_loads_still_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Never resident, during or after: still a hard failure, same message."""
+    _serve(monkeypatch, _FakeOllama(during=[], after=[]))
+
+    with pytest.raises(BackendMismatchError, match="did not report the generated"):
+        ollama.OllamaAdapter("gpu").run("hello")
+
+
+def test_an_in_flight_sighting_is_held_to_the_same_device_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A silent CPU fallback is still caught when the evidence came in flight.
+
+    The fallback widens *when* the reading may be taken, never what it has to
+    show, so a GPU run that never reached VRAM fails exactly as before.
+    """
+    gpu_model = models.model_for("gpu")
+    _serve(
+        monkeypatch,
+        _FakeOllama(during=_resident(gpu_model, vram=0), after=[]),
+    )
+
+    with pytest.raises(BackendMismatchError, match="VRAM"):
+        ollama.OllamaAdapter("gpu").run("hello")
+
+
+def test_a_partial_offload_seen_in_flight_is_still_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gpu_model = models.model_for("gpu")
+    _serve(
+        monkeypatch,
+        _FakeOllama(during=_resident(gpu_model, vram=LOADED_BYTES // 4), after=[]),
+    )
+
+    with pytest.raises(BackendMismatchError, match="not fully resident"):
+        ollama.OllamaAdapter("gpu").run("hello")
+
+
+def test_a_cpu_run_that_touched_the_gpu_in_flight_is_still_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cpu_model = models.model_for("cpu")
+    _serve(
+        monkeypatch,
+        _FakeOllama(during=_resident(cpu_model, vram=512), after=[]),
+    )
+
+    with pytest.raises(BackendMismatchError, match="GPU memory"):
+        ollama.OllamaAdapter("cpu").run("hello")

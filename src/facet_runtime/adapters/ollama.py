@@ -7,9 +7,10 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import urllib.error
 import urllib.request
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 from facet_runtime import models
 from facet_runtime.adapters.base import (
@@ -89,11 +90,73 @@ def _loaded_model(model_name: str) -> dict[str, Any] | None:
     return None
 
 
+#: How often the residency watch samples `/api/ps` while a generation is in
+#: flight. The watch returns at its first sighting, so this bounds how soon
+#: after the weights land the evidence is taken, not how long anything waits.
+RESIDENCY_POLL_S = 0.25
+
+
+class _ResidencyWatch:
+    """Record where the weights sat *while* the tokens were being computed.
+
+    `/api/ps` describes the present. Sampled after `/api/generate` returns it
+    describes a runner that is already idle and evictable, so a second client
+    loading a model that does not fit alongside it makes Ollama evict the
+    runner that just answered, and the sample reports the replacement instead.
+    Measured here: that check normally answers in ~30us, but when it contends
+    with a scheduler eviction it blocks ~40ms and returns the post-eviction
+    state -- the signature of every observed occurrence of this failure.
+
+    Ollama lists a model only once it is fully resident, so a sighting taken
+    during the generation is the same evidence about the same weights, observed
+    while our own request holds the runner and nothing can have replaced it.
+    """
+
+    def __init__(self, model_name: str) -> None:
+        self._model = model_name
+        self._stop = threading.Event()
+        self._sighting: dict[str, Any] | None = None
+        self._thread = threading.Thread(target=self._watch, daemon=True)
+
+    def _watch(self) -> None:
+        while not self._stop.is_set():
+            try:
+                loaded = _loaded_model(self._model)
+            except FacetRuntimeError:
+                loaded = None  # A blip here costs the fallback, not the run.
+            if loaded is not None:
+                self._sighting = loaded
+                return
+            self._stop.wait(RESIDENCY_POLL_S)
+
+    def __enter__(self) -> Self:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=RESIDENCY_POLL_S * 2)
+
+    @property
+    def sighting(self) -> dict[str, Any] | None:
+        """The model as `/api/ps` reported it mid-generation, if it was seen."""
+        return self._sighting
+
+
 def _verify_loaded_backend(
-    model_name: str, backend: Literal["cpu", "gpu"]
+    model_name: str,
+    backend: Literal["cpu", "gpu"],
+    observed: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Prove where Ollama put the weights, and return that proof as evidence."""
     loaded = _loaded_model(model_name)
+    # The live reading is preferred, so a run whose model is still resident is
+    # judged exactly as before, on exactly the same numbers. `observed` answers
+    # only the case where the runner was evicted between the answer and this
+    # check, and it is held to every one of the same tests below.
+    taken = "after generation"
+    if loaded is None and observed is not None:
+        loaded, taken = observed, "during generation"
     if loaded is None:
         raise BackendMismatchError(
             "Ollama did not report the generated model as loaded"
@@ -118,6 +181,7 @@ def _verify_loaded_backend(
             )
     return {
         "source": "ollama /api/ps",
+        "observed": taken,
         "loaded_bytes": size,
         "device_memory_bytes": vram,
         "device_resident_fraction": resident,
@@ -186,8 +250,9 @@ class OllamaAdapter:
             },
         }
         try:
-            response = _request_json("/api/generate", payload)
-            evidence = _verify_loaded_backend(model_name, self.backend)
+            with _ResidencyWatch(model_name) as watch:
+                response = _request_json("/api/generate", payload)
+            evidence = _verify_loaded_backend(model_name, self.backend, watch.sighting)
             metrics = metrics_from_ollama_api(
                 response, output_token_limit=assignment.max_output_tokens
             )
@@ -242,8 +307,9 @@ class OllamaAdapter:
             },
         }
         try:
-            response = _request_json("/api/generate", payload)
-            evidence = _verify_loaded_backend(model_name, "gpu")
+            with _ResidencyWatch(model_name) as watch:
+                response = _request_json("/api/generate", payload)
+            evidence = _verify_loaded_backend(model_name, "gpu", watch.sighting)
             metrics = metrics_from_ollama_api(
                 response, output_token_limit=assignment.max_output_tokens
             )
