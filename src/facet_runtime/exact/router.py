@@ -22,6 +22,11 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from facet_runtime.exact.answer import extract_final_math
+from facet_runtime.exact.coordinate import (
+    COORDINATE_METHOD,
+    COORDINATE_REQUEST,
+    solve_missing_coordinate,
+)
 from facet_runtime.exact.distance import (
     DISTANCE_METHOD,
     DISTANCE_REQUEST,
@@ -244,6 +249,26 @@ def solve_exact(
         )
         if line is not None or refusal:
             return line, refusal
+
+    # The other half of an ordered pair: the equation is written, one
+    # coordinate is given, and the box takes the value that makes the pair a
+    # solution. One row of a table of values with one blank in it, and answered
+    # by the same machinery -- bind what was stated, solve for what was left
+    # out, and prove it by substitution back into the stated relation.
+    if COORDINATE_REQUEST.search(instruction):
+        coordinate, refusal = solve_missing_coordinate(instruction, expressions)
+        if coordinate is not None:
+            return (
+                ExactSolution(
+                    display=coordinate,
+                    entry=coordinate,
+                    entry_mode="math",
+                    method=COORDINATE_METHOD,
+                ),
+                "",
+            )
+        if refusal:
+            return None, refusal
 
     classification = classify_polynomial(instruction, expressions)
     if classification is not None:
