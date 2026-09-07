@@ -282,13 +282,14 @@ def request_bytes(**changes) -> bytes:
 class FakeAdapter:
     backend: str
     available: bool = True
+    text: str = "FINAL ANSWER: 4"
 
     def is_available(self) -> bool:
         return self.available
 
     def run(self, prompt: str) -> AdapterOutput:
         return AdapterOutput(
-            text="FINAL ANSWER: 4",
+            text=self.text,
             runtime="fake-runtime",
             model="fake-model",
             device=f"fake {self.backend} device",
@@ -301,6 +302,83 @@ def adapters(**overrides) -> dict[str, FakeAdapter]:
     made = {name: FakeAdapter(name) for name in ("cpu", "gpu", "npu")}
     made.update(overrides)
     return made
+
+
+def answer_lines(count: int) -> str:
+    values = [str(index) for index in range(1, count + 1)]
+    final = f"FINAL ANSWER: {', '.join(values)}"
+    if count == 1:
+        return final
+    return "\n".join(
+        [final, *(f"PART {index}: {index}" for index in range(1, count + 1))]
+    )
+
+
+def multipart_request_bytes(answer_parts: int) -> bytes:
+    return request_bytes(
+        operation="solve_math",
+        prompt=None,
+        problem={
+            "instruction": "Complete the table of values.",
+            "expressions": ["x=y^2"],
+            "answer_parts": answer_parts,
+        },
+    )
+
+
+@pytest.mark.parametrize("answer_parts", range(1, 5))
+def test_existing_answer_part_counts_are_unchanged(answer_parts: int) -> None:
+    reply = answer_lines(answer_parts)
+
+    envelope, code = handle(
+        multipart_request_bytes(answer_parts),
+        adapters=adapters(gpu=FakeAdapter("gpu", text=reply)),
+    )
+
+    assert code == 0
+    answer = envelope["result"]["answer"]
+    if answer_parts == 1:
+        assert answer["entry"] == "1"
+        assert answer["parts"] == []
+    else:
+        assert answer["entry"] == ""
+        assert answer["parts"] == [
+            str(index) for index in range(1, answer_parts + 1)
+        ]
+
+
+def test_a_five_part_request_returns_five_ordered_parts() -> None:
+    reply = (
+        "FINAL ANSWER: 0, 8, 8, 5, 3\n"
+        "PART 1: 0\n"
+        "PART 2: 8\n"
+        "PART 3: 8\n"
+        "PART 4: 5\n"
+        "PART 5: 3"
+    )
+
+    envelope, code = handle(
+        multipart_request_bytes(5),
+        adapters=adapters(gpu=FakeAdapter("gpu", text=reply)),
+    )
+
+    assert code == 0
+    assert envelope["result"]["answer"]["entry"] == ""
+    assert envelope["result"]["answer"]["parts"] == ["0", "8", "8", "5", "3"]
+
+
+@pytest.mark.parametrize("answer_parts", [0, 6])
+def test_answer_part_counts_outside_one_to_five_fail_closed(
+    answer_parts: int,
+) -> None:
+    envelope, code = handle(
+        multipart_request_bytes(answer_parts), adapters=adapters()
+    )
+
+    assert code == 1
+    assert envelope["error"]["kind"] == "invalid_request"
+    assert envelope["error"]["message"] == "answer_parts must be 1 to 5"
+    assert "result" not in envelope
 
 
 def test_the_structured_result_survives_the_wire() -> None:

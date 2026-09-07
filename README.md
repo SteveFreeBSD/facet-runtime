@@ -151,7 +151,7 @@ because none took part.
 | `instruction`   | yes      | The question in words, at most 4000 characters. |
 | `expressions`   | a `value` about written mathematics; `parabola_plan` | 1 to 8 exact expressions, at most 2000 characters each. |
 | `result_kind`   | no       | `value`, `parabola_plan`, or `quadratic_regression`. Default `value`. |
-| `answer_parts`  | `value` only | 1 to 4 separate values the answer takes. Default 1. |
+| `answer_parts`  | `value` only | 1 to 5 separate values the answer takes. Default 1. |
 | `graph`         | `parabola_plan` | Normalised geometry: `family`, `orientation`, `bounds`, `snap`, `controls`. |
 | `points`        | `quadratic_regression`; a `value` about data | 3 to 32 exact `{"x", "y"}` coordinates. |
 | `label`         | no       | The question's own label, at most 200 characters. |
