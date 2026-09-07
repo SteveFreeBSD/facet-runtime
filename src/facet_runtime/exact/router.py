@@ -39,6 +39,13 @@ from facet_runtime.exact.symbolic import (
     quadratic_coefficients,
     solve_equation,
 )
+from facet_runtime.exact.table import (
+    TABLE_METHOD,
+    AnswerTable,
+    Representation,
+    TableRefused,
+    complete_table,
+)
 
 #: The name the deterministic stage answers to. It is a solver, and it is named
 #: as one: a reader must never have to work out whether this was a model.
@@ -130,12 +137,51 @@ class ExactSolution:
     evidence: dict[str, str] = field(default_factory=dict)
 
 
+def solve_table_completion(
+    expressions: list[str],
+    table: AnswerTable,
+    answer_parts: int,
+    representation: Representation | None,
+) -> tuple[ExactSolution | None, str]:
+    """Fill a table of values from the relation it is a table of.
+
+    The strongest signal a question can carry. A grid of stated values with
+    numbered blanks, beside the relation those values satisfy, determines every
+    blank by substitution -- so this is tried before any reading of the
+    instruction's verbs, which are at best a description of what the grid
+    already says exactly.
+    """
+    try:
+        done = complete_table(
+            expressions,
+            table,
+            answer_parts=answer_parts,
+            representation=representation,
+        )
+    except TableRefused as error:
+        return None, f"the table was not completed exactly: {error}"
+    single = len(done.parts) == 1
+    return (
+        ExactSolution(
+            display=", ".join(done.parts),
+            entry=done.parts[0] if single else "",
+            parts=() if single else done.parts,
+            entry_mode="math",
+            method=TABLE_METHOD,
+            evidence=done.evidence,
+        ),
+        "",
+    )
+
+
 def solve_exact(
     instruction: str,
     expressions: list[str],
     *,
     points: list[tuple[str, str]] | None = None,
     answer_parts: int = 1,
+    table: AnswerTable | None = None,
+    representation: Representation | None = None,
 ) -> tuple[ExactSolution | None, str]:
     """Answer the question exactly, or decline it and say why.
 
@@ -143,8 +189,13 @@ def solve_exact(
 
     A question is about written expressions or about measured points, never
     both. Points arrive when nobody wrote the function down -- it exists only
-    as the fit to the data -- and are answered by their own solver.
+    as the fit to the data -- and are answered by their own solver. A table of
+    values is a third shape: the question and its data are the same grid.
     """
+    if table is not None:
+        return solve_table_completion(
+            expressions, table, answer_parts, representation
+        )
     if points:
         return solve_over_points(instruction, points, answer_parts)
     if not expressions:

@@ -152,6 +152,8 @@ because none took part.
 | `expressions`   | a `value` about written mathematics; `parabola_plan` | 1 to 8 exact expressions, at most 2000 characters each. |
 | `result_kind`   | no       | `value`, `parabola_plan`, or `quadratic_regression`. Default `value`. |
 | `answer_parts`  | `value` only | 1 to 5 separate values the answer takes. Default 1. |
+| `answer_table`  | `value` only | A question that is a grid: `columns`, and `rows` of `{"value"}` or `{"blank": n}` cells. |
+| `answer_representation` | `value` only | The form every separate answer must take: `{"kind": "signed-integer", "max_length": n}`. |
 | `graph`         | `parabola_plan` | Normalised geometry: `family`, `orientation`, `bounds`, `snap`, `controls`. |
 | `points`        | `quadratic_regression`; a `value` about data | 3 to 32 exact `{"x", "y"}` coordinates. |
 | `label`         | no       | The question's own label, at most 200 characters. |
@@ -165,6 +167,75 @@ points on a parabola, is a question about something else and is refused rather
 than ignored. There is deliberately no way to describe *where* a question came
 from: a consumer that owns a browser cannot hand over a document, an element, a
 picture, or an action even by accident.
+
+### A question that is a table
+
+A completion question states a relation and a grid: some cells carry values,
+the rest are blank, and the blanks are the answer. That is not a question about
+an expression with some prose around it -- the grid *is* the question, and it
+crosses as one. Each blank is numbered as the answer's parts are numbered, so
+part N and the Nth blank are the same cell on both sides.
+
+```bash
+echo '{"facet_protocol_version": 2, "operation": "solve_math",
+       "request_id": "demo-4",
+       "problem": {"instruction": "Complete the table of values below for the given equation.",
+                   "expressions": ["x=y^2"], "answer_parts": 5,
+                   "answer_table": {"columns": ["x", "y"],
+                     "rows": [[{"value": "0"}, {"blank": 1}],
+                              [{"blank": 2}, {"value": "2\\sqrt{2}"}],
+                              [{"value": "64"}, {"blank": 3}],
+                              [{"value": "25"}, {"blank": 4}],
+                              [{"blank": 5}, {"value": "-\\sqrt{3}"}]]},
+                   "answer_representation": {"kind": "signed-integer",
+                                             "max_length": 4}}}' | facet-remote
+```
+
+`src/facet_runtime/exact/table.py` binds each row's stated cells into the
+relation, solves for the one unknown left, and proves every candidate by
+substituting it back. A row with no blank is checked too: it states the
+relation a second time, and a grid that contradicts its own relation has been
+misread and is declined rather than half-answered.
+
+Where a row admits more than one exact solution -- `x = 64` is satisfied by 8
+and by -8 -- choosing is unavoidable, and the rule is stated once and applied
+everywhere: **the smallest in magnitude, and the non-negative one where two
+share a magnitude.** The choice is a tie-break and never a claim that the other
+root is wrong; the verifier below accepts either.
+
+`answer_representation` filters the solutions and is never satisfied by
+adjusting one. A row whose only exact solutions cannot be written the way the
+question requires is declined, because rounding an exact answer to fit an
+answer box is how a wrong answer gets typed in confidently.
+
+```json
+{"route": "exact",
+ "answer": {"kind": "value", "display": "0, 8, 8, 5, 3", "entry": "",
+            "parts": ["0", "8", "8", "5", "3"], "entry_mode": "math"},
+ "provenance": {"source": "Facet Exact",
+                "method": "SymPy exact table completion",
+                "router": "solved", "model": null, "actual_backend": null,
+                "evidence": {"source": "facet exact solver", "model_calls": 0,
+                             "computation": {"relation": "x - y**2 = 0",
+                                             "row 3": "x=64 -> y in {8, -8} -> 8",
+                                             "...": "..."}}}}
+```
+
+#### Checking an answer that was reasoned
+
+The reasoning route is stochastic, and the *shape* of its reply is not evidence
+about the mathematics in it: five parts arriving is not five parts being right,
+and a live run returned five that were neither. When a question carries a grid,
+every reasoned answer to it is put back into the grid before it becomes an
+answer -- each part into its own row, beside that row's stated values, and the
+relation has to hold exactly. A part that fails is refused as
+`unusable_result`, and the model is not asked again: retrying until a reply
+passes would make a verifier into a filter on repeated guessing.
+
+A grid whose relation cannot be read at all is a different claim from an answer
+being wrong, and is not treated as one. Nothing is checked, the reasoned answer
+stands on its own terms, and `provenance.evidence.answer_table` says which of
+the three happened: `verified`, `not checkable: <reason>`, or `not-applicable`.
 
 ### A question about data
 

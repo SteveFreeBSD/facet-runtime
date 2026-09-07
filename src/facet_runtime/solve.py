@@ -33,10 +33,17 @@ from typing import Any, Literal
 import sympy
 
 from facet_runtime.exact import (
+    AnswerTable,
     EntryMode,
     ExactSolution,
+    Representation,
+    TableRefused,
+    TableUnverifiable,
     extract_final_math,
+    parse_answer_table,
+    parse_representation,
     solve_exact,
+    verify_completion,
 )
 from facet_runtime.graph import (
     PARABOLA_PLAN,
@@ -74,7 +81,22 @@ PROBLEM_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     # A value question is about written expressions or about measured points.
     # Which of the two is required is decided in `parse_problem`, because it is
     # a rule about the pair rather than about either field.
-    VALUE: (("instruction",), ("expressions", "points", "answer_parts", "label")),
+    VALUE: (
+        ("instruction",),
+        (
+            "expressions",
+            "points",
+            "answer_parts",
+            "label",
+            # A question that is a grid: the values it states, the blanks it
+            # asks for, and the form every answer must take. Structured, and
+            # deliberately not prose -- the alternative is Facet recovering a
+            # table out of a sentence it was handed, which is the reparsing
+            # every seam in this file exists to avoid.
+            "answer_table",
+            "answer_representation",
+        ),
+    ),
     PARABOLA_PLAN: (("instruction", "expressions", "graph"), ("label",)),
     QUADRATIC_REGRESSION: (("instruction", "points"), ("label",)),
 }
@@ -119,6 +141,14 @@ class MathProblem:
     graph: GraphContext | None = None
     #: Normalised coordinates a regression is fitted to.
     points: tuple[Point, ...] = ()
+    #: The grid a completion question is answered in, when it is one: stated
+    #: cells and numbered blanks, in the columns the question names. Held as
+    #: structure so the exact route can compute it and the verifier can prove
+    #: an answer against it; neither can be done to a sentence.
+    answer_table: AnswerTable | None = None
+    #: The form every separate answer must take, when the question publishes
+    #: one. A requirement on the reply, like `answer_parts`.
+    answer_representation: Representation | None = None
 
 
 def _checked_kind(payload: dict[str, Any]) -> str:
@@ -203,6 +233,27 @@ def parse_problem(payload: Any) -> MathProblem:
         )
     except PlanRefused as error:
         raise SolveRefused("invalid_request", str(error)) from error
+    try:
+        table = (
+            parse_answer_table(payload["answer_table"])
+            if "answer_table" in payload
+            else None
+        )
+        representation = (
+            parse_representation(payload["answer_representation"])
+            if "answer_representation" in payload
+            else None
+        )
+    except TableRefused as error:
+        raise SolveRefused("invalid_request", str(error)) from error
+    # A grid with a different number of blanks than the answer has parts is two
+    # descriptions of one question that do not agree, and there is no reading
+    # of it that is not a guess about which one to believe.
+    if table is not None and table.blanks != parts:
+        raise SolveRefused(
+            "invalid_request",
+            f"answer_table has {table.blanks} blanks and answer_parts is {parts}",
+        )
     return MathProblem(
         instruction=instruction,
         expressions=tuple(expressions),
@@ -211,6 +262,8 @@ def parse_problem(payload: Any) -> MathProblem:
         result_kind=kind,
         graph=graph,
         points=points,
+        answer_table=table,
+        answer_representation=representation,
     )
 
 
@@ -236,6 +289,31 @@ def reasoning_prompt(problem: MathProblem) -> str:
     rendered = "\n".join(
         f"- {expression}" for expression in problem.expressions
     ) or "\n".join(f"- ({point.x}, {point.y})" for point in problem.points)
+    # The grid, written out for a reader that has only words. It arrives as
+    # structure and stays that way for the exact route and for the verifier;
+    # this is the one place it becomes prose, and it becomes prose here rather
+    # than before it crossed, so nothing downstream has to read it back.
+    #
+    # The requirement on the *form* of each answer is not repeated here. It
+    # already reaches this prompt inside the instruction, stated by whoever
+    # owns the answer surface, and saying it twice in two wordings is how a
+    # model ends up arbitrating between them.
+    grid = ""
+    if problem.answer_table is not None:
+        table = problem.answer_table
+        lines = [" | ".join(table.columns)]
+        for row in table.rows:
+            lines.append(
+                " | ".join(
+                    f"(part {cell.blank})" if cell.blank is not None else cell.value
+                    for cell in row
+                )
+            )
+        grid = (
+            "This question states the table below and is answered by completing "
+            "it. Each blank is written as the numbered answer part that belongs "
+            "in it.\n" + "\n".join(lines) + "\n"
+        )
     heading = f"Question: {problem.label.strip()}\n" if problem.label.strip() else ""
     prefix = answer_prefix(problem.instruction)
     # Whoever asked has already written the variable and the equals sign, so
@@ -278,6 +356,7 @@ def reasoning_prompt(problem: MathProblem) -> str:
         f"{heading}"
         f"Instruction: {problem.instruction}\n"
         f"Expression(s):\n{rendered}\n"
+        f"{grid}"
         f"{labelled}"
         f"{contract}"
     )
@@ -380,6 +459,36 @@ def _reasoning_result(
         # A multi-part answer has no single string that could be typed into
         # several separate boxes, so there is no single entry.
         entry, parts = "", tuple(values)
+    # A reasoned answer to a grid is proved against that grid before it becomes
+    # an answer. The reasoning route is stochastic and the shape of its reply is
+    # not evidence about the mathematics in it: five parts arriving is not five
+    # parts being right, and a live run returned five wrong ones. Where the
+    # question carries enough structure to check, checking is not optional.
+    #
+    # Fail closed, and no retry. Asking again until a reply passes would turn a
+    # verifier into a filter on repeated guessing, and the run would report an
+    # answer with no account of how many were thrown away to get it.
+    checked = "not-applicable"
+    if problem.answer_table is not None:
+        try:
+            verify_completion(
+                parts or (entry,),
+                problem.expressions,
+                problem.answer_table,
+                representation=problem.answer_representation,
+            )
+            checked = "verified"
+        except TableUnverifiable as error:
+            # The grid could not be read as mathematics, so nothing about this
+            # answer was checked -- which is a different claim from the answer
+            # being wrong, and refusing on it would be refusing on the strength
+            # of a check that never ran. Said out loud rather than assumed.
+            checked = f"not checkable: {error}"
+        except TableRefused as error:
+            raise SolveRefused(
+                "unusable_result",
+                f"the reasoning route's answer does not complete the table: {error}",
+            ) from error
     return {
         "route": "reasoning",
         "answer": _answer(final_math, entry, parts, "auto"),
@@ -398,7 +507,10 @@ def _reasoning_result(
             "elapsed_ms": elapsed_ms,
             "fallback": run.fallback,
             "metrics": run.to_dict()["metrics"],
-            "evidence": dict(run.evidence),
+            # Whether the grid this answer claims to complete was checked, and
+            # when it was not, why not. A reader must never have to work out
+            # whether a reasoned answer was proved or merely counted.
+            "evidence": {**dict(run.evidence), "answer_table": checked},
         },
     }
 
@@ -481,6 +593,8 @@ def solve_math(problem: MathProblem, *, reason) -> dict[str, Any]:
         list(problem.expressions),
         points=[(point.x, point.y) for point in problem.points],
         answer_parts=problem.answer_parts,
+        table=problem.answer_table,
+        representation=problem.answer_representation,
     )
     if solution is not None:
         return _exact_result(solution, round((time.perf_counter() - started) * 1000, 3))
