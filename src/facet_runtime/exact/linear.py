@@ -44,9 +44,18 @@ LINEAR_REQUEST = re.compile(
 
 # The properties, each in the spellings Hawkes uses. Every one of them names
 # what it is: there is no pattern here that reads a bare number as a slope.
+#: A slope, including the form Hawkes actually writes it in: "Slope of f = -5",
+#: which names the function whose slope it is. Two things make that hard to
+#: read. The name sits between the word and the value, and the MathML converter
+#: strips every space -- `<mtext>Slope of </mtext>` arrives glued to what
+#: follows it as `Slopeoff=-5`. So the spacing is optional throughout, and the
+#: connector after the name needs no word boundary in front of it, because the
+#: page's own spacing is gone by the time this reads it.
 _SLOPE = re.compile(
-    rf"(?:^|\b)(?:the\s+)?(?:slope(?![-\s]intercept)|m)\s*(?:=|:|\bis\b|\bof\b)\s*"
-    rf"(?P<value>{_VALUE})",
+    rf"(?:^|\b)(?:the\s*)?slope(?![-\s]?intercept)"
+    rf"(?:\s*of\s*(?:the\s*)?(?:function\s*)?[A-Za-z](?:\s*\(\s*[A-Za-z]\s*\))?)?"
+    rf"\s*(?:=|:|is\b|of\b)\s*(?P<value>{_VALUE})"
+    rf"|(?:^|\b)m\s*(?:=|:|\bis\b)\s*(?P<mvalue>{_VALUE})",
     re.IGNORECASE,
 )
 _FUNCTION_VALUE = re.compile(
@@ -178,7 +187,7 @@ def read_properties(fragment: str) -> list[Property] | None:
             continue
         found.append(_point(value, sympy.Integer(0), f"x-intercept={value}"))
     for match in _SLOPE.finditer(fragment):
-        value = rational(match.group("value"))
+        value = rational(match.group("value") or match.group("mvalue") or "")
         if value is None or not take(match):
             continue
         found.append(_slope(value, f"slope={value}"))

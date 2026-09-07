@@ -30,6 +30,19 @@ LIVE = (FIND, ["f(0)=-3", "slope=-5"])
     [
         pytest.param(*LIVE, "-5x-3", id="live-slope-and-value"),
         pytest.param(FIND, ["f(0)=-3", "m=-5"], "-5x-3", id="slope-as-m"),
+        # What lesson 3.2 actually writes, through the real converter: the
+        # slope names the function it belongs to, and MathJax's spacing is
+        # gone by the time a solver sees it.
+        pytest.param(
+            FIND, ["f(0)=-3", "Slopeoff=-5"], "-5x-3", id="live-slope-of-f-collapsed"
+        ),
+        pytest.param(
+            FIND, ["f(0)=-3", "Slope of f = -5"], "-5x-3", id="live-slope-of-f-spaced"
+        ),
+        pytest.param(
+            FIND, ["f(0)=-3", "Slopeoff(x)=-5"], "-5x-3", id="slope-of-f-of-x"
+        ),
+        pytest.param(FIND, ["f(0)=-3", "slopeof-5"], "-5x-3", id="slope-of-a-value"),
         pytest.param(FIND, ["slope=-5", "f(2)=7"], "-5x+17", id="slope-and-a-point"),
         pytest.param(
             FIND, ["y-intercept=-3", "slope=-5"], "-5x-3", id="slope-and-intercept"
@@ -135,6 +148,11 @@ def test_every_stated_property_holds_of_the_returned_function() -> None:
             ["slope=-5", "slope=2", "f(0)=1"],
             "the stated slopes disagree",
             id="two-slopes",
+        ),
+        pytest.param(
+            ["f(0)=-3", "f=-5"],
+            "a stated property could not be read exactly",
+            id="a-bare-equality-is-not-a-slope",
         ),
         pytest.param(
             ["f(0)=-3", "f(0)=-5"],
