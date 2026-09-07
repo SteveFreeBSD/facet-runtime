@@ -22,6 +22,11 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from facet_runtime.exact.answer import extract_final_math
+from facet_runtime.exact.distance import (
+    DISTANCE_METHOD,
+    DISTANCE_REQUEST,
+    solve_point_distance,
+)
 from facet_runtime.exact.linear import (
     LINEAR_REQUEST,
     render,
@@ -207,6 +212,26 @@ def solve_exact(
 
     if _VERTEX.search(instruction):
         return solve_vertex(expressions)
+
+    # The distance between two written points. Its answer is a square root, and
+    # on the live page the box that takes it publishes `0123456789-` with a
+    # Radical template -- so the exact radical is the only enterable form and a
+    # decimal is not a rounder answer but an unusable one. Claimed only when
+    # the instruction asks for a distance and two points can be read exactly.
+    if DISTANCE_REQUEST.search(instruction):
+        distance, refusal = solve_point_distance(instruction, expressions)
+        if distance is not None:
+            return (
+                ExactSolution(
+                    display=distance,
+                    entry=distance,
+                    entry_mode="math",
+                    method=DISTANCE_METHOD,
+                ),
+                "",
+            )
+        if refusal:
+            return None, refusal
 
     # A line stated as its properties rather than written down. Two facts fix
     # it and one does not, so this either computes both and proves every stated
