@@ -121,6 +121,46 @@ PART_LINE = re.compile(r"(?im)^\s*PART\s+(\d+)\s*:\s*(.+?)\s*$")
 #: route is told to answer with the value alone rather than repeating it.
 ANSWER_PREFIX = re.compile(r"\bsolve\s+for\s+([A-Za-z])\b", re.IGNORECASE)
 
+#: A word of English: two or more letters, and nothing else in it.
+#:
+#: An answer is written in mathematics. It may name itself in a few words --
+#: "Not a Real Number", "All Real Numbers" -- and those named forms are short,
+#: because they are names. Past a handful of words the thing being read is a
+#: sentence, and a sentence arriving where an answer belongs is a reply about
+#: the question rather than to it: most often this prompt's own contract,
+#: echoed back by a model that pattern-completed the line it was shown instead
+#: of answering.
+PROSE_WORD = re.compile(r"^[A-Za-z]{2,}$")
+
+#: How many such words an answer may contain before it is prose.
+#:
+#: Three, which is the longest named answer there is: "Not a Real Number" --
+#: "a" is one letter and is not one of them. "Real Number" and "Not Factorable"
+#: are two. Set against the things that must be refused rather than against a
+#: round number: this prompt's own "answer number 1 by itself" is four, and its
+#: "all answers as they would ordinarily be written" is eight.
+MAX_ANSWER_WORDS = 3
+
+#: How long an answer may be, in characters. Generous, because display notation
+#: can be long -- a domain in interval notation runs to a couple of dozen -- and
+#: because length is the weaker of the two tests here.
+MAX_ANSWER_DISPLAY = 200
+
+
+def answer_shaped(text: str) -> bool:
+    """Whether this reads as an answer rather than as a sentence about one.
+
+    A shape test, deliberately, and not a list of sentences to refuse. What
+    makes prompt text recognisable is not which words it uses; it is that it is
+    made of words at all, and no list of forbidden phrases survives the next
+    rewording of the prompt.
+    """
+    stripped = text.strip()
+    if not stripped or len(stripped) > MAX_ANSWER_DISPLAY:
+        return False
+    words = [token for token in stripped.split() if PROSE_WORD.match(token)]
+    return len(words) <= MAX_ANSWER_WORDS
+
 
 class SolveRefused(Exception):
     """Facet will not answer this, and says which kind of refusal it is."""
@@ -340,19 +380,29 @@ def reasoning_prompt(problem: MathProblem) -> str:
     )
     parts = problem.answer_parts
     if parts > 1:
+        # The labels are listed bare, and what belongs after each of them is
+        # said afterwards, in prose that is plainly about the reply rather than
+        # in it.
+        #
+        # They used to be listed as filled-in examples -- "FINAL ANSWER: all
+        # answers as they would ordinarily be written" -- and a model that
+        # pattern-completes the shape it is shown copies the line whole. That
+        # exact sentence reached a live answer card as the answer. Nothing here
+        # is the defence against it (`answer_shaped` is), but a contract that
+        # cannot be mistaken for a worked example is one fewer thing to echo,
+        # and a label that ends at its colon carries no text worth copying.
         contract = (
             f"This question takes {parts} separate answers.\n"
-            f"Reply with exactly {parts + 1} labelled lines and nothing else, "
-            "and keep every label exactly as written here:\n"
-            "FINAL ANSWER: all answers as they would ordinarily be written\n"
-            + "".join(
-                f"PART {index}: answer number {index} by itself\n"
-                for index in range(1, parts + 1)
-            )
-            + "Every line must begin with its own label, including each PART "
-            "line. A PART line holds only one of those answers: no label "
-            "repeated inside it, no variable name, no equals sign, no "
-            '"or", no explanation.'
+            f"Reply with exactly {parts + 1} lines and nothing else. Each line "
+            "begins with one of these labels, in this order, spelled exactly "
+            "as shown:\n"
+            "FINAL ANSWER:\n"
+            + "".join(f"PART {index}:\n" for index in range(1, parts + 1))
+            + "After FINAL ANSWER: write the answers as they would ordinarily "
+            "be written together. After each PART label write that one answer "
+            "and nothing else: no label repeated inside it, no variable name, "
+            'no equals sign, no "or", no explanation. Write answers, never a '
+            "description of what to write."
         )
     else:
         contract = (
@@ -447,6 +497,17 @@ def _exact_result(solution: ExactSolution, elapsed_ms: float) -> dict[str, Any]:
     }
 
 
+def _renders(display: str, values: tuple[str, ...] | list[str]) -> bool:
+    """Whether one line could be these separate answers, written together.
+
+    Not an equality: how several answers are ordinarily written together is the
+    model's to decide -- "x = -3 or x = 3", "(1, 2) and (3, 4)" -- and pinning a
+    format here would refuse correct renderings. What a rendering cannot do is
+    fail to contain the answers it renders.
+    """
+    return all(value.strip() and value.strip() in display for value in values)
+
+
 def _reasoning_result(
     problem: MathProblem, run: RunResult, decline: str, elapsed_ms: float
 ) -> dict[str, Any]:
@@ -469,6 +530,41 @@ def _reasoning_result(
         # A multi-part answer has no single string that could be typed into
         # several separate boxes, so there is no single entry.
         entry, parts = "", tuple(values)
+        # The FINAL ANSWER line of a multi-part reply is only ever a *rendering*
+        # of the parts: the same answers written the way they would ordinarily
+        # be written together. The parts are the answer, and they have been
+        # checked; the rendering has not, and it is the one field on this route
+        # that a model can fill with anything at all.
+        #
+        # It reached a live answer card as "all answers as they would ordinarily
+        # be written" -- this prompt's own description of the line, pattern-
+        # completed instead of answered. So it is not taken on trust: a line
+        # that neither reads as an answer nor accounts for the parts it claims
+        # to render is replaced by the parts themselves, which is what it was
+        # supposed to say. Rebuilt rather than refused, because the answer is
+        # known and only its presentation was lost.
+        # A PART line can be echoed exactly as the FINAL ANSWER line can, and
+        # nothing above this reads what a part says -- only that there are the
+        # right number of them, numbered in order and not empty. These are the
+        # values that would be typed into real answer boxes.
+        unshaped = [value for value in values if not answer_shaped(value)]
+        if unshaped:
+            raise SolveRefused(
+                "unusable_result",
+                f"the reasoning route answered part {values.index(unshaped[0]) + 1} "
+                "with prose rather than with an answer",
+            )
+        if not answer_shaped(final_math) or not _renders(final_math, values):
+            final_math = ", ".join(values)
+    # Whatever the count, what leaves here is an answer or it is nothing. On
+    # the single-value route `final_math` is both the answer and its rendering
+    # and there is no checked part list to rebuild it from, so a sentence is
+    # refused outright rather than published as a value.
+    if not answer_shaped(final_math):
+        raise SolveRefused(
+            "unusable_result",
+            "the reasoning route answered with prose rather than with an answer",
+        )
     # A reasoned answer to a grid is proved against that grid before it becomes
     # an answer. The reasoning route is stochastic and the shape of its reply is
     # not evidence about the mathematics in it: five parts arriving is not five

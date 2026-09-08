@@ -3,8 +3,8 @@ Instruction: Find the x-intercepts.
 Expression(s):
 - 3*x^2+2*x-8
 This question takes 2 separate answers.
-Reply with exactly 3 labelled lines and nothing else, and keep every label exactly as written here:
-FINAL ANSWER: all answers as they would ordinarily be written
-PART 1: answer number 1 by itself
-PART 2: answer number 2 by itself
-Every line must begin with its own label, including each PART line. A PART line holds only one of those answers: no label repeated inside it, no variable name, no equals sign, no "or", no explanation.
+Reply with exactly 3 lines and nothing else. Each line begins with one of these labels, in this order, spelled exactly as shown:
+FINAL ANSWER:
+PART 1:
+PART 2:
+After FINAL ANSWER: write the answers as they would ordinarily be written together. After each PART label write that one answer and nothing else: no label repeated inside it, no variable name, no equals sign, no "or", no explanation. Write answers, never a description of what to write.

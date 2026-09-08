@@ -283,8 +283,14 @@ def test_the_value_prompt_still_says_everything_it_has_to() -> None:
     assert "Question: Question 4 of 12" in labelled
     assert "`r =` is already written for you" in prefixed
     assert "This question takes 2 separate answers." in multi
-    assert "PART 1: answer number 1 by itself" in multi
-    assert "PART 2: answer number 2 by itself" in multi
+    # The labels are listed bare and what goes after them is said separately.
+    # Listing them as filled-in examples is what a model copied verbatim onto a
+    # live answer card; a label that ends at its colon has nothing worth
+    # echoing. See `answer_shaped`, which is the actual defence.
+    assert "\nFINAL ANSWER:\n" in multi
+    assert "\nPART 1:\n" in multi and "\nPART 2:\n" in multi
+    assert "write that one answer and nothing else" in multi
+    assert "Write answers, never a description of what to write." in multi
 
 
 def test_the_regression_prompt_settles_the_rounding_it_used_to_argue_with() -> None:
