@@ -40,6 +40,13 @@ from typing import Any
 #: The result kinds a consumer may ask for beyond an ordinary value.
 PARABOLA_PLAN = "parabola_plan"
 QUADRATIC_REGRESSION = "quadratic_regression"
+POINT_PLOT_PLAN = "point_plot_plan"
+
+#: How many points a plotting question may ask for. Hawkes draws one draggable
+#: control per point, and a question asking for none or for dozens is not the
+#: one this reads.
+MIN_PLOT_POINTS = 1
+MAX_PLOT_POINTS = 12
 
 #: An exact integer or rational, written as a string. A decimal is refused:
 #: `0.333` is not a third, and a plan proved against exact mathematics cannot
@@ -279,3 +286,72 @@ def parse_regression_plan(text: str) -> dict[str, Any]:
         "kind": fields["kind"],
         "coefficients": [_rational(value, "a coefficient") for value in coefficients],
     }
+
+
+#: A literal ordered pair as a page writes one: integers or exact rationals,
+#: never a decimal, and never an expression to be evaluated.
+_PLOT_VALUE = r"(?:[+-]?\s*\d+\s*/\s*[1-9]\d*|[+-]?\s*\d+)"
+_PLOT_PAIR = re.compile(
+    rf"\(\s*(?P<x>{_PLOT_VALUE})\s*,\s*(?P<y>{_PLOT_VALUE})\s*\)"
+)
+
+#: The question this reads. "Plot the following points" states its own answer
+#: -- the pairs are written down -- so there is nothing here for a model to
+#: work out, and asking one would be inventing uncertainty.
+PLOT_REQUEST = re.compile(
+    r"\b(?:plot|graph|place|draw)\b[^.?!]*?\bpoints?\b",
+    re.IGNORECASE,
+)
+
+
+def _plot_rational(text: str) -> str:
+    """One coordinate, normalised to the exact form a plan carries."""
+    cleaned = re.sub(r"\s+", "", text).replace("\u2212", "-")
+    if "/" in cleaned:
+        top, bottom = cleaned.split("/", 1)
+        sign = "-" if top.startswith("-") else ""
+        top = top.lstrip("+-")
+        if int(top) == 0:
+            return "0"
+        return f"{sign}{int(top)}/{int(bottom)}"
+    value = int(cleaned)
+    return str(value)
+
+
+def read_plot_points(instruction: str, expressions: list[str]) -> list[dict[str, str]]:
+    """Every literal ordered pair this question writes down, in order.
+
+    Deterministic and exact. The pairs are the question's own words; nothing is
+    evaluated, rounded, reordered or deduplicated -- a question may legitimately
+    ask for the same point twice, and the set it asks for is the answer.
+    """
+    found: list[dict[str, str]] = []
+    for fragment in [instruction, *expressions]:
+        for match in _PLOT_PAIR.finditer(fragment or ""):
+            found.append(
+                {
+                    "x": _plot_rational(match.group("x")),
+                    "y": _plot_rational(match.group("y")),
+                }
+            )
+    return found
+
+
+def build_point_plot_plan(
+    instruction: str, expressions: list[str]
+) -> dict[str, Any]:
+    """The plan for a "plot these points" question, or a refusal.
+
+    A plan and not an answer: it says where the page's own controls must end
+    up, and the browser proves every one of them against the live graph before
+    a key is pressed.
+    """
+    if not PLOT_REQUEST.search(instruction or ""):
+        raise PlanRefused("this is not a request to plot stated points")
+    points = read_plot_points(instruction, expressions)
+    if not MIN_PLOT_POINTS <= len(points) <= MAX_PLOT_POINTS:
+        raise PlanRefused(
+            f"a plotting plan needs between {MIN_PLOT_POINTS} and "
+            f"{MAX_PLOT_POINTS} stated points, and {len(points)} were read"
+        )
+    return {"kind": "points", "points": points}

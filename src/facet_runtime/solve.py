@@ -47,7 +47,9 @@ from facet_runtime.exact import (
 )
 from facet_runtime.graph import (
     PARABOLA_PLAN,
+    POINT_PLOT_PLAN,
     QUADRATIC_REGRESSION,
+    build_point_plot_plan,
     GraphContext,
     PlanRefused,
     Point,
@@ -72,7 +74,12 @@ Route = Literal["exact", "reasoning"]
 #: the other two are *plans* -- a proposal a consumer will prove for itself
 #: before it draws anything. Growing this set is a protocol change.
 VALUE = "value"
-RESULT_KINDS: tuple[str, ...] = (VALUE, PARABOLA_PLAN, QUADRATIC_REGRESSION)
+RESULT_KINDS: tuple[str, ...] = (
+    VALUE,
+    PARABOLA_PLAN,
+    QUADRATIC_REGRESSION,
+    POINT_PLOT_PLAN,
+)
 
 #: Which problem fields belong to which requested result. A field that means
 #: nothing to the kind being asked for is refused rather than ignored: it is a
@@ -99,6 +106,9 @@ PROBLEM_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     ),
     PARABOLA_PLAN: (("instruction", "expressions", "graph"), ("label",)),
     QUADRATIC_REGRESSION: (("instruction", "points"), ("label",)),
+    # No `graph` context: a plotting plan is read from the question's own
+    # words, and the live graph is what the browser proves it against.
+    POINT_PLOT_PLAN: (("instruction",), ("expressions", "label")),
 }
 
 #: `PART 1: ...` from a multi-part reasoning reply. Structured on purpose: the
@@ -582,6 +592,33 @@ def solve_math(problem: MathProblem, *, reason) -> dict[str, Any]:
     decline in the first place.
     """
     started = time.perf_counter()
+    # A plotting question states its own answer: the pairs are written down, so
+    # there is nothing for a model to work out and asking one would be
+    # inventing uncertainty. Deterministic, and no backend is engaged at all.
+    if problem.result_kind == POINT_PLOT_PLAN:
+        try:
+            plan = build_point_plot_plan(problem.instruction, list(problem.expressions))
+        except PlanRefused as error:
+            raise SolveRefused("unusable_result", str(error)) from error
+        return {
+            "route": "exact",
+            "answer": _plan_answer(problem.result_kind, plan),
+            "provenance": {
+                "source": "Facet Exact",
+                "method": "stated points read from the question",
+                "router": "solved",
+                "router_detail": "",
+                "runtime": f"SymPy {sympy.__version__}",
+                "model": None,
+                "device": None,
+                "requested_backend": None,
+                "actual_backend": None,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
+                "fallback": False,
+                "metrics": {},
+                "evidence": {"source": "facet exact solver", "model_calls": 0},
+            },
+        }
     if problem.result_kind != VALUE:
         ask, *_ = SPECIALISTS[problem.result_kind]
         run = reason(ask(problem))
