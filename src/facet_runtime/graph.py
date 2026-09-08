@@ -291,9 +291,7 @@ def parse_regression_plan(text: str) -> dict[str, Any]:
 #: A literal ordered pair as a page writes one: integers or exact rationals,
 #: never a decimal, and never an expression to be evaluated.
 _PLOT_VALUE = r"(?:[+-]?\s*\d+\s*/\s*[1-9]\d*|[+-]?\s*\d+)"
-_PLOT_PAIR = re.compile(
-    rf"\(\s*(?P<x>{_PLOT_VALUE})\s*,\s*(?P<y>{_PLOT_VALUE})\s*\)"
-)
+_PLOT_PAIR = re.compile(rf"\(\s*(?P<x>{_PLOT_VALUE})\s*,\s*(?P<y>{_PLOT_VALUE})\s*\)")
 
 #: The question this reads. "Plot the following points" states its own answer
 #: -- the pairs are written down -- so there is nothing here for a model to
@@ -337,9 +335,7 @@ def read_plot_points(instruction: str, expressions: list[str]) -> list[dict[str,
     return found
 
 
-def build_point_plot_plan(
-    instruction: str, expressions: list[str]
-) -> dict[str, Any]:
+def build_point_plot_plan(instruction: str, expressions: list[str]) -> dict[str, Any]:
     """The plan for a "plot these points" question, or a refusal.
 
     A plan and not an answer: it says where the page's own controls must end

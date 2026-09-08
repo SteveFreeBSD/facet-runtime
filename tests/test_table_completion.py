@@ -128,8 +128,12 @@ def test_a_solution_that_cannot_be_written_that_way_is_refused_not_rounded() -> 
     with pytest.raises(TableRefused, match="no solution the answer may be written"):
         complete_table(
             ["y=x"],
-            table([[{"value": r"\frac{1}{3}"}, {"blank": 1}],
-                   [{"value": "2"}, {"value": "2"}]]),
+            table(
+                [
+                    [{"value": r"\frac{1}{3}"}, {"blank": 1}],
+                    [{"value": "2"}, {"value": "2"}],
+                ]
+            ),
             answer_parts=1,
             representation=representation(),
         )
@@ -139,8 +143,9 @@ def test_a_solution_too_long_for_the_answer_is_refused() -> None:
     with pytest.raises(TableRefused, match="no solution the answer may be written"):
         complete_table(
             ["y=x"],
-            table([[{"value": "123456"}, {"blank": 1}],
-                   [{"value": "2"}, {"value": "2"}]]),
+            table(
+                [[{"value": "123456"}, {"blank": 1}], [{"value": "2"}, {"value": "2"}]]
+            ),
             answer_parts=1,
             representation=representation(),
         )
@@ -152,27 +157,48 @@ def test_a_solution_too_long_for_the_answer_is_refused() -> None:
 @pytest.mark.parametrize(
     "expressions,rows,columns,why",
     [
-        (["x=y^2"], LIVE_ROWS, ("x", "revenue per photo"),
-         "column heading is not a variable"),
+        (
+            ["x=y^2"],
+            LIVE_ROWS,
+            ("x", "revenue per photo"),
+            "column heading is not a variable",
+        ),
         (["x=y^2", "y=x"], LIVE_ROWS, ("x", "y"), "one stated relation"),
         (["x+y"], LIVE_ROWS, ("x", "y"), "not one equation"),
         (["x=z^2"], LIVE_ROWS, ("x", "y"), "names something the table does not"),
-        (["x=y^2"], [[{"blank": 1}, {"blank": 2}],
-                     [{"value": "1"}, {"value": "1"}]], ("x", "y"),
-         "more than one blank"),
-        (["x=y^2"], [[{"value": "9"}, {"value": "2"}],
-                     [{"value": "4"}, {"blank": 1}]], ("x", "y"),
-         "contradicts the stated relation"),
-        (["x=y^2"], [[{"value": "-1"}, {"blank": 1}],
-                     [{"value": "4"}, {"value": "2"}]], ("x", "y"),
-         "no exact solution"),
-        (["x*y=0"], [[{"value": "0"}, {"blank": 1}],
-                     [{"value": "1"}, {"value": "0"}]], ("x", "y"),
-         "does not constrain its blank"),
+        (
+            ["x=y^2"],
+            [[{"blank": 1}, {"blank": 2}], [{"value": "1"}, {"value": "1"}]],
+            ("x", "y"),
+            "more than one blank",
+        ),
+        (
+            ["x=y^2"],
+            [[{"value": "9"}, {"value": "2"}], [{"value": "4"}, {"blank": 1}]],
+            ("x", "y"),
+            "contradicts the stated relation",
+        ),
+        (
+            ["x=y^2"],
+            [[{"value": "-1"}, {"blank": 1}], [{"value": "4"}, {"value": "2"}]],
+            ("x", "y"),
+            "no exact solution",
+        ),
+        (
+            ["x*y=0"],
+            [[{"value": "0"}, {"blank": 1}], [{"value": "1"}, {"value": "0"}]],
+            ("x", "y"),
+            "does not constrain its blank",
+        ),
     ],
     ids=[
-        "phrase-heading", "two-relations", "not-an-equation", "foreign-symbol",
-        "two-blanks-in-a-row", "inconsistent-row", "no-real-solution",
+        "phrase-heading",
+        "two-relations",
+        "not-an-equation",
+        "foreign-symbol",
+        "two-blanks-in-a-row",
+        "inconsistent-row",
+        "no-real-solution",
         "blank-unconstrained",
     ],
 )
@@ -183,9 +209,7 @@ def test_an_ambiguous_or_unsupported_table_declines(
         complete_table(
             expressions,
             table(rows, columns),
-            answer_parts=sum(
-                1 for row in rows for cell in row if "blank" in cell
-            ),
+            answer_parts=sum(1 for row in rows for cell in row if "blank" in cell),
         )
 
 
@@ -199,15 +223,30 @@ def test_a_grid_and_a_part_count_that_disagree_decline() -> None:
     [
         ({"columns": ["x"], "rows": LIVE_ROWS}, "columns must be"),
         ({"columns": ["x", "x"], "rows": LIVE_ROWS}, "share a name"),
-        ({"columns": ["x", "y"], "rows": [[{"value": "1"}, {"value": "2"}]] * 2},
-         "has a blank in it"),
-        ({"columns": ["x", "y"], "rows": [
-            [{"value": "1"}, {"blank": 2}], [{"value": "2"}, {"blank": 3}]]},
-         "numbered from one"),
-        ({"columns": ["x", "y"], "rows": [
-            [{"value": "1", "blank": 1}, {"value": "2"}],
-            [{"value": "2"}, {"blank": 2}]]},
-         "one blank or one value"),
+        (
+            {"columns": ["x", "y"], "rows": [[{"value": "1"}, {"value": "2"}]] * 2},
+            "has a blank in it",
+        ),
+        (
+            {
+                "columns": ["x", "y"],
+                "rows": [
+                    [{"value": "1"}, {"blank": 2}],
+                    [{"value": "2"}, {"blank": 3}],
+                ],
+            },
+            "numbered from one",
+        ),
+        (
+            {
+                "columns": ["x", "y"],
+                "rows": [
+                    [{"value": "1", "blank": 1}, {"value": "2"}],
+                    [{"value": "2"}, {"blank": 2}],
+                ],
+            },
+            "one blank or one value",
+        ),
     ],
     ids=["one-column", "repeated-column", "no-blank", "misnumbered", "cell-is-both"],
 )
@@ -248,8 +287,15 @@ def test_the_other_root_verifies_too() -> None:
         (("0", "8", "8", "5", "x"), "not an exact real number"),
         (("0", "8", "8", "5", "<b>3</b>"), "not exact mathematics"),
     ],
-    ids=["wrong-value", "swapped", "first-wrong", "too-few", "too-many",
-         "symbolic", "not-mathematics"],
+    ids=[
+        "wrong-value",
+        "swapped",
+        "first-wrong",
+        "too-few",
+        "too-many",
+        "symbolic",
+        "not-mathematics",
+    ],
 )
 def test_an_answer_that_does_not_complete_the_table_is_refused(parts, why) -> None:
     with pytest.raises(TableRefused, match=why):
@@ -342,10 +388,18 @@ def test_the_grid_is_stated_to_a_model_only_when_one_is_asked() -> None:
     """It cannot be computed, so the reasoning route is told what the grid is."""
     from facet_runtime.solve import reasoning_prompt
 
-    asked = reasoning_prompt(problem(answer_table={
-        "columns": ["x", "y"],
-        "rows": [[{"value": "0"}, {"blank": 1}], [{"blank": 2}, {"value": "9"}]],
-    }, parts=2))
+    asked = reasoning_prompt(
+        problem(
+            answer_table={
+                "columns": ["x", "y"],
+                "rows": [
+                    [{"value": "0"}, {"blank": 1}],
+                    [{"blank": 2}, {"value": "9"}],
+                ],
+            },
+            parts=2,
+        )
+    )
 
     assert "0 | (part 1)" in asked
     assert "(part 2) | 9" in asked
@@ -357,19 +411,21 @@ def test_the_grid_is_stated_to_a_model_only_when_one_is_asked() -> None:
 
 def rounding_problem(parts: int = 1):
     """A table the exact route declines, because a third is not an integer."""
-    return parse_problem({
-        "instruction": "Complete the table of values below.",
-        "expressions": ["y=x"],
-        "answer_parts": parts,
-        "answer_table": {
-            "columns": ["x", "y"],
-            "rows": [
-                [{"value": r"\frac{1}{3}"}, {"blank": 1}],
-                [{"value": "2"}, {"value": "2"}],
-            ],
-        },
-        "answer_representation": INTEGER_4,
-    })
+    return parse_problem(
+        {
+            "instruction": "Complete the table of values below.",
+            "expressions": ["y=x"],
+            "answer_parts": parts,
+            "answer_table": {
+                "columns": ["x", "y"],
+                "rows": [
+                    [{"value": r"\frac{1}{3}"}, {"blank": 1}],
+                    [{"value": "2"}, {"value": "2"}],
+                ],
+            },
+            "answer_representation": INTEGER_4,
+        }
+    )
 
 
 def answering(text: str):
@@ -410,15 +466,20 @@ def test_a_reasoned_answer_that_completes_the_table_is_kept() -> None:
     costs one substitution -- which is the whole asymmetry this backstop rests
     on: finding an answer can be hard where checking one is easy.
     """
-    quintic = parse_problem({
-        "instruction": "Complete the table of values below.",
-        "expressions": ["x=y^5+y+1"],
-        "answer_parts": 1,
-        "answer_table": {
-            "columns": ["x", "y"],
-            "rows": [[{"value": "3"}, {"blank": 1}], [{"value": "1"}, {"value": "0"}]],
-        },
-    })
+    quintic = parse_problem(
+        {
+            "instruction": "Complete the table of values below.",
+            "expressions": ["x=y^5+y+1"],
+            "answer_parts": 1,
+            "answer_table": {
+                "columns": ["x", "y"],
+                "rows": [
+                    [{"value": "3"}, {"blank": 1}],
+                    [{"value": "1"}, {"value": "0"}],
+                ],
+            },
+        }
+    )
 
     result = solve_math(quintic, reason=answering("FINAL ANSWER: 1"))
 
@@ -428,15 +489,20 @@ def test_a_reasoned_answer_that_completes_the_table_is_kept() -> None:
 
 def test_a_reasoned_answer_to_the_same_row_that_is_wrong_is_rejected() -> None:
     """The same question, one off. Checking is what tells the two apart."""
-    quintic = parse_problem({
-        "instruction": "Complete the table of values below.",
-        "expressions": ["x=y^5+y+1"],
-        "answer_parts": 1,
-        "answer_table": {
-            "columns": ["x", "y"],
-            "rows": [[{"value": "3"}, {"blank": 1}], [{"value": "1"}, {"value": "0"}]],
-        },
-    })
+    quintic = parse_problem(
+        {
+            "instruction": "Complete the table of values below.",
+            "expressions": ["x=y^5+y+1"],
+            "answer_parts": 1,
+            "answer_table": {
+                "columns": ["x", "y"],
+                "rows": [
+                    [{"value": "3"}, {"blank": 1}],
+                    [{"value": "1"}, {"value": "0"}],
+                ],
+            },
+        }
+    )
 
     with pytest.raises(SolveRefused, match="does not complete the table"):
         solve_math(quintic, reason=answering("FINAL ANSWER: 2"))
@@ -449,16 +515,21 @@ def test_a_grid_that_cannot_be_read_leaves_the_reasoned_answer_alone() -> None:
     would make every completion question with an unreadable relation
     unanswerable rather than merely unproved.
     """
-    unreadable = parse_problem({
-        "instruction": "Complete the table of values below.",
-        # Two relations: this module will not choose between them.
-        "expressions": ["y=x", "y=2*x"],
-        "answer_parts": 1,
-        "answer_table": {
-            "columns": ["x", "y"],
-            "rows": [[{"value": "3"}, {"blank": 1}], [{"value": "2"}, {"value": "2"}]],
-        },
-    })
+    unreadable = parse_problem(
+        {
+            "instruction": "Complete the table of values below.",
+            # Two relations: this module will not choose between them.
+            "expressions": ["y=x", "y=2*x"],
+            "answer_parts": 1,
+            "answer_table": {
+                "columns": ["x", "y"],
+                "rows": [
+                    [{"value": "3"}, {"blank": 1}],
+                    [{"value": "2"}, {"value": "2"}],
+                ],
+            },
+        }
+    )
 
     result = solve_math(unreadable, reason=answering("FINAL ANSWER: 3"))
 
@@ -467,10 +538,12 @@ def test_a_grid_that_cannot_be_read_leaves_the_reasoned_answer_alone() -> None:
 
 
 def test_a_question_without_a_grid_reports_no_verification_at_all() -> None:
-    plain = parse_problem({
-        "instruction": "Complete the sentence.",
-        "expressions": ["x+1"],
-    })
+    plain = parse_problem(
+        {
+            "instruction": "Complete the sentence.",
+            "expressions": ["x+1"],
+        }
+    )
 
     result = solve_math(plain, reason=answering("FINAL ANSWER: x+1"))
 

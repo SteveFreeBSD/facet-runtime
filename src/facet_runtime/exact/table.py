@@ -86,7 +86,8 @@ class AnswerTable:
             "columns": list(self.columns),
             "rows": [
                 [
-                    {"blank": cell.blank} if cell.blank is not None
+                    {"blank": cell.blank}
+                    if cell.blank is not None
                     else {"value": cell.value}
                     for cell in row
                 ]
@@ -302,8 +303,11 @@ def _rows(table: AnswerTable, symbols: dict[str, sympy.Symbol], residual):
     prepared = []
     for index, row in enumerate(table.rows, start=1):
         where = f"row {index}"
-        blanks = [(column, cell) for column, cell in zip(table.columns, row)
-                  if cell.blank is not None]
+        blanks = [
+            (column, cell)
+            for column, cell in zip(table.columns, row)
+            if cell.blank is not None
+        ]
         bindings = {
             symbols[column]: _value(cell, f"{where}, column {column}")
             for column, cell in zip(table.columns, row)
@@ -315,7 +319,7 @@ def _rows(table: AnswerTable, symbols: dict[str, sympy.Symbol], residual):
             if sympy.simplify(residual.subs(bindings)) != 0:
                 raise TableUnverifiable(f"{where} contradicts the stated relation")
             continue
-        (column, cell), = blanks
+        ((column, cell),) = blanks
         prepared.append((cell.blank, symbols[column], bindings, where))
     return prepared
 
@@ -340,9 +344,7 @@ def complete_table(
         if not allowed:
             # Every solution is exact and none can be written the way the
             # question requires. Rounding one is not available here.
-            raise TableRefused(
-                f"{where} has no solution the answer may be written as"
-            )
+            raise TableRefused(f"{where} has no solution the answer may be written as")
         pick = allowed[0]
         chosen[position] = sympy.sstr(pick)
         stated = ", ".join(

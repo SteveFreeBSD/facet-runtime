@@ -342,9 +342,7 @@ def test_existing_answer_part_counts_are_unchanged(answer_parts: int) -> None:
         assert answer["parts"] == []
     else:
         assert answer["entry"] == ""
-        assert answer["parts"] == [
-            str(index) for index in range(1, answer_parts + 1)
-        ]
+        assert answer["parts"] == [str(index) for index in range(1, answer_parts + 1)]
 
 
 def test_a_five_part_request_returns_five_ordered_parts() -> None:
@@ -371,9 +369,7 @@ def test_a_five_part_request_returns_five_ordered_parts() -> None:
 def test_answer_part_counts_outside_one_to_five_fail_closed(
     answer_parts: int,
 ) -> None:
-    envelope, code = handle(
-        multipart_request_bytes(answer_parts), adapters=adapters()
-    )
+    envelope, code = handle(multipart_request_bytes(answer_parts), adapters=adapters())
 
     assert code == 1
     assert envelope["error"]["kind"] == "invalid_request"
