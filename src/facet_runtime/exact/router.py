@@ -37,6 +37,11 @@ from facet_runtime.exact.linear import (
     render,
     solve_linear_function,
 )
+from facet_runtime.exact.midpoint import (
+    MIDPOINT_METHOD,
+    MIDPOINT_REQUEST,
+    solve_midpoint,
+)
 from facet_runtime.exact.polynomial import answer_polynomial_product
 from facet_runtime.exact.quadrant import (
     QUADRANT_METHOD,
@@ -278,6 +283,29 @@ def solve_exact(
                     entry=distance,
                     entry_mode="math",
                     method=DISTANCE_METHOD,
+                ),
+                "",
+            )
+        if refusal:
+            return None, refusal
+
+    # The midpoint of the same two points, and the same argument as the
+    # distance above it: halving the sum of two rationals is exact, and a model
+    # asked to do it renders the half as a decimal about as often as not.
+    # `(8.5,-0.5)` is a correct midpoint written in a notation the answer box
+    # does not take, which the page refuses -- so it is computed here.
+    if MIDPOINT_REQUEST.search(instruction):
+        midpoint, refusal = solve_midpoint(instruction, expressions)
+        if midpoint is not None:
+            return (
+                ExactSolution(
+                    display=midpoint,
+                    entry=midpoint,
+                    # An ordered pair is already exactly what belongs in the
+                    # answer: its parentheses are part of it, and rewriting it
+                    # into entry syntax would damage it.
+                    entry_mode="verbatim",
+                    method=MIDPOINT_METHOD,
                 ),
                 "",
             )
