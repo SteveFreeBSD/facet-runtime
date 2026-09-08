@@ -670,10 +670,16 @@ def solve_one_equation(
     if result is None:
         return None
     if isinstance(result, AbsoluteValueEquationResult):
-        entry = result.classification
+        # A solved value is mathematics and a classification is a phrase, so
+        # they cannot share a mode. `verbatim` means "type exactly this", and
+        # `_display` writes a rational as `\frac{3}{2}` -- which nobody types.
         if len(result.solutions) == 1:
-            entry = result.solutions[0]
-        return ExactSolution(display=result.display_text, entry=entry)
+            return ExactSolution(
+                display=result.display_text,
+                entry=result.solutions[0],
+                entry_mode="math",
+            )
+        return ExactSolution(display=result.display_text, entry=result.classification)
     if isinstance(result, LinearEquationResult):
         if result.solution is None:
             return ExactSolution(
@@ -687,11 +693,14 @@ def solve_one_equation(
                 entry=result.solution,
                 entry_mode="math",
             )
+        # Same value, same solver: the branch above already says `math`, and
+        # this one differs only in whether the question named its variable.
         return ExactSolution(
             display=(
                 f"{result.classification} ({result.variable} = {result.solution})"
             ),
             entry=result.solution,
+            entry_mode="math",
         )
     if not result.solutions:
         return ExactSolution(

@@ -205,6 +205,43 @@ def test_no_emitter_carries_parts_without_saying_so(path):
     )
 
 
+@pytest.mark.parametrize(
+    ("equation", "entry"),
+    [
+        ("2x-1=0", r"\frac{1}{2}"),
+        ("4x=3", r"\frac{3}{4}"),
+        ("|2x-3|=0", r"\frac{3}{2}"),
+    ],
+)
+def test_a_solved_value_is_mathematics_and_not_a_literal(equation, entry):
+    """Regression: a fractional root was unenterable while an integer one worked.
+
+    `entry_mode` says how literally to take a value, and `verbatim` means "type
+    exactly this". Two branches carried a *solved* value at the default
+    `verbatim` -- the linear equation whose question did not name its variable,
+    and the single-solution absolute value -- while the branch beside each said
+    `math`. `_display` writes a rational as `\frac{1}{2}`, so the consumer took
+    it literally and the keypad refused it on the backslash.
+
+    Integers hid it: `3x+2=8` answers `2`, which is the same either way.
+    """
+    solution, decline = solve_exact("Solve the equation.", [equation])
+
+    assert solution is not None, decline
+    assert solution.entry == entry
+    assert solution.entry_mode == "math"
+
+
+def test_a_classification_is_still_a_literal():
+    """The other half of the same branch, so the fix cannot over-reach: "Two
+    Solutions" is a phrase and is typed, or selected, exactly as written."""
+    solution, decline = solve_exact("Solve the equation.", ["|2x-1|=4"])
+
+    assert solution is not None, decline
+    assert solution.entry == "Two Solutions"
+    assert solution.entry_mode == "verbatim"
+
+
 def test_the_form_set_is_closed():
     """Growing it is a protocol change, and one the consumer has to be told."""
     assert ANSWER_FORMS == (SCALAR, ORDERED_PAIR, PARTS, CHOICE)
