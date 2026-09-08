@@ -38,6 +38,11 @@ from facet_runtime.exact.linear import (
     solve_linear_function,
 )
 from facet_runtime.exact.polynomial import answer_polynomial_product
+from facet_runtime.exact.quadrant import (
+    QUADRANT_METHOD,
+    QUADRANT_REQUEST,
+    solve_quadrant,
+)
 from facet_runtime.exact.regression import NotThisQuestion, regression_optimum
 from facet_runtime.exact.symbolic import (
     AbsoluteValueEquationResult,
@@ -56,6 +61,18 @@ from facet_runtime.exact.table import (
     TableRefused,
     complete_table,
 )
+
+
+class ExactlyRefused(Exception):
+    """A question the deterministic stage claimed, and cannot answer.
+
+    Different from a decline. A decline says "not mine", and sending the
+    question on to a model is exactly the right thing to do with it. This says
+    "mine, and unanswerable as asked" -- and falling through on it would hand a
+    model a question whose answer it cannot know, because the answer is one of
+    a set of alternatives the model was never shown.
+    """
+
 
 #: The name the deterministic stage answers to. It is a solver, and it is named
 #: as one: a reader must never have to work out whether this was a model.
@@ -192,6 +209,7 @@ def solve_exact(
     answer_parts: int = 1,
     table: AnswerTable | None = None,
     representation: Representation | None = None,
+    choices: list[str] | None = None,
 ) -> tuple[ExactSolution | None, str]:
     """Answer the question exactly, or decline it and say why.
 
@@ -201,15 +219,43 @@ def solve_exact(
     both. Points arrive when nobody wrote the function down -- it exists only
     as the fit to the data -- and are answered by their own solver. A table of
     values is a third shape: the question and its data are the same grid.
+
+    `choices` is a fourth: a question answered by *choosing*, whose answer is
+    one of the alternatives it published rather than a value anyone computes a
+    written form for. Where they are given they are the contract, and a solver
+    that claims such a question must return one of them exactly.
     """
     if table is not None:
-        return solve_table_completion(
-            expressions, table, answer_parts, representation
-        )
+        return solve_table_completion(expressions, table, answer_parts, representation)
     if points:
         return solve_over_points(instruction, points, answer_parts)
     if not expressions:
         return None, "no exact expression was supplied"
+
+    # Which quadrant a point is in is two sign comparisons, and it is claimed
+    # before every solver below because nothing below it can answer a choice
+    # question at all. Live, this whole family reached a reasoning model on a
+    # GPU -- for a question decided by comparing two numbers to zero -- because
+    # the deterministic stage had no branch for it.
+    if QUADRANT_REQUEST.search(instruction):
+        choice, refusal = solve_quadrant(instruction, expressions, choices or [])
+        if choice:
+            return (
+                ExactSolution(
+                    display=choice,
+                    # Already exactly what belongs in the answer: it is the
+                    # page's own words for one of its own choices, and
+                    # rewriting it into entry syntax would damage it.
+                    entry=choice,
+                    entry_mode="verbatim",
+                    method=QUADRANT_METHOD,
+                ),
+                "",
+            )
+        # Named, and never fallen through. A quadrant question that cannot be
+        # answered from its own choices is not one a model should be asked --
+        # it would be guessing at which alternatives the page offered.
+        raise ExactlyRefused(refusal)
 
     point_count = requested_quadratic_point_count(instruction)
     if point_count is not None:

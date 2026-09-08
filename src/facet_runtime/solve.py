@@ -35,6 +35,7 @@ import sympy
 from facet_runtime.exact import (
     AnswerTable,
     EntryMode,
+    ExactlyRefused,
     ExactSolution,
     Representation,
     TableRefused,
@@ -49,10 +50,10 @@ from facet_runtime.graph import (
     PARABOLA_PLAN,
     POINT_PLOT_PLAN,
     QUADRATIC_REGRESSION,
-    build_point_plot_plan,
     GraphContext,
     PlanRefused,
     Point,
+    build_point_plot_plan,
     parabola_prompt,
     parse_graph_context,
     parse_parabola_plan,
@@ -67,6 +68,12 @@ MAX_EXPRESSION_CHARS = 2000
 MAX_INSTRUCTION_CHARS = 4000
 MAX_LABEL_CHARS = 200
 MAX_ANSWER_PARTS = 5
+
+#: The alternatives a choice question publishes, bounded. Two is the fewest
+#: that is a choice at all; the ceiling is generous because these are short
+#: strings and the page decides how many there are, not Facet.
+MAX_ANSWER_CHOICES = 12
+MAX_CHOICE_CHARS = 120
 
 Route = Literal["exact", "reasoning"]
 
@@ -102,6 +109,12 @@ PROBLEM_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
             # every seam in this file exists to avoid.
             "answer_table",
             "answer_representation",
+            # The alternatives a question answered by *choosing* published.
+            # Structure rather than prose, for the same reason the grid is:
+            # an answer that must be one of these can be checked against them,
+            # and a list flattened into the instruction can be read by a model
+            # and by nothing else.
+            "answer_choices",
         ),
     ),
     PARABOLA_PLAN: (("instruction", "expressions", "graph"), ("label",)),
@@ -199,6 +212,11 @@ class MathProblem:
     #: The form every separate answer must take, when the question publishes
     #: one. A requirement on the reply, like `answer_parts`.
     answer_representation: Representation | None = None
+    #: What this question may be answered with, when it is answered by
+    #: choosing. The page's own words for its own alternatives, and the whole
+    #: contract: an answer to a choice question that is not one of the choices
+    #: is not an answer to it, whichever route produced it.
+    answer_choices: tuple[str, ...] = ()
 
 
 def _checked_kind(payload: dict[str, Any]) -> str:
@@ -304,6 +322,17 @@ def parse_problem(payload: Any) -> MathProblem:
             "invalid_request",
             f"answer_table has {table.blanks} blanks and answer_parts is {parts}",
         )
+    choices = parse_choices(payload.get("answer_choices", []))
+    # A question answered by choosing has one answer: the choice. Several
+    # alternatives are not several answers, and reading them as one is exactly
+    # the fault this field exists to end -- a five-option radio group crossed
+    # as a five-part question, and a model was asked for five values to a
+    # question with one.
+    if choices and parts != 1:
+        raise SolveRefused(
+            "invalid_request",
+            f"a question answered by choosing has one answer, not {parts}",
+        )
     return MathProblem(
         instruction=instruction,
         expressions=tuple(expressions),
@@ -314,7 +343,35 @@ def parse_problem(payload: Any) -> MathProblem:
         points=points,
         answer_table=table,
         answer_representation=representation,
+        answer_choices=choices,
     )
+
+
+def parse_choices(payload: Any) -> tuple[str, ...]:
+    """The alternatives a choice question published, or refuse them.
+
+    Distinct, because two identical choices make "the answer is this one"
+    unanswerable, and non-empty because a choice with no words cannot be an
+    answer anybody could check.
+    """
+    if not isinstance(payload, list):
+        raise SolveRefused("invalid_request", "answer_choices must be a list")
+    if not payload:
+        return ()
+    if not 2 <= len(payload) <= MAX_ANSWER_CHOICES:
+        raise SolveRefused(
+            "invalid_request",
+            f"answer_choices must hold 2 to {MAX_ANSWER_CHOICES} alternatives",
+        )
+    for choice in payload:
+        if not isinstance(choice, str) or not choice.strip():
+            raise SolveRefused("invalid_request", "every choice must be a string")
+        if len(choice) > MAX_CHOICE_CHARS:
+            raise SolveRefused("invalid_request", "a choice exceeds the size limit")
+    choices = tuple(choice.strip() for choice in payload)
+    if len(set(choices)) != len(choices):
+        raise SolveRefused("invalid_request", "answer_choices must be distinct")
+    return choices
 
 
 def answer_prefix(instruction: str) -> str:
@@ -363,6 +420,18 @@ def reasoning_prompt(problem: MathProblem) -> str:
             "This question states the table below and is answered by completing "
             "it. Each blank is written as the numbered answer part that belongs "
             "in it.\n" + "\n".join(lines) + "\n"
+        )
+    # The alternatives, when the question is answered by choosing one. Listed
+    # as they were published and required back verbatim, because that is what
+    # the consumer will select by. A model that writes its own wording for the
+    # right choice has answered the mathematics and not the question.
+    alternatives = ""
+    if problem.answer_choices:
+        alternatives = (
+            "This question is answered by choosing one of these, and nothing "
+            "else:\n"
+            + "".join(f"- {choice}\n" for choice in problem.answer_choices)
+            + "Reply with exactly one of them, copied word for word.\n"
         )
     heading = f"Question: {problem.label.strip()}\n" if problem.label.strip() else ""
     prefix = answer_prefix(problem.instruction)
@@ -417,6 +486,7 @@ def reasoning_prompt(problem: MathProblem) -> str:
         f"Instruction: {problem.instruction}\n"
         f"Expression(s):\n{rendered}\n"
         f"{grid}"
+        f"{alternatives}"
         f"{labelled}"
         f"{contract}"
     )
@@ -497,6 +567,23 @@ def _exact_result(solution: ExactSolution, elapsed_ms: float) -> dict[str, Any]:
     }
 
 
+def _held_to_the_choices(problem: MathProblem, answer: str) -> None:
+    """Refuse an answer to a choice question that is not one of the choices.
+
+    Exactly one of them, character for character after trimming. Not "close
+    to", not "contains": the consumer selects a control by the words the page
+    published, and an answer that merely resembles one of them selects nothing.
+    """
+    if not problem.answer_choices:
+        return
+    if answer.strip() not in problem.answer_choices:
+        raise SolveRefused(
+            "unusable_result",
+            "this question is answered by choosing one of the alternatives it "
+            "published, and the answer is not one of them",
+        )
+
+
 def _renders(display: str, values: tuple[str, ...] | list[str]) -> bool:
     """Whether one line could be these separate answers, written together.
 
@@ -556,6 +643,10 @@ def _reasoning_result(
             )
         if not answer_shaped(final_math) or not _renders(final_math, values):
             final_math = ", ".join(values)
+    # A question answered by choosing is answered with one of its own choices,
+    # whichever route produced it. A model handed free text here would be
+    # offering an answer the page has no way to accept.
+    _held_to_the_choices(problem, final_math)
     # Whatever the count, what leaves here is an answer or it is nothing. On
     # the single-value route `final_math` is both the answer and its rendering
     # and there is no checked part list to rebuild it from, so a sentence is
@@ -679,6 +770,19 @@ def _specialist_result(
     }
 
 
+def _solve_exactly(problem: MathProblem):
+    """The deterministic stage, given exactly what it is allowed to know."""
+    return solve_exact(
+        problem.instruction,
+        list(problem.expressions),
+        points=[(point.x, point.y) for point in problem.points],
+        answer_parts=problem.answer_parts,
+        table=problem.answer_table,
+        representation=problem.answer_representation,
+        choices=list(problem.answer_choices),
+    )
+
+
 def solve_math(problem: MathProblem, *, reason) -> dict[str, Any]:
     """Route one question, run it, and return the structured result.
 
@@ -721,15 +825,19 @@ def solve_math(problem: MathProblem, *, reason) -> dict[str, Any]:
         return _specialist_result(
             problem, run, round((time.perf_counter() - started) * 1000, 3)
         )
-    solution, decline = solve_exact(
-        problem.instruction,
-        list(problem.expressions),
-        points=[(point.x, point.y) for point in problem.points],
-        answer_parts=problem.answer_parts,
-        table=problem.answer_table,
-        representation=problem.answer_representation,
-    )
+    try:
+        solution, decline = _solve_exactly(problem)
+    except ExactlyRefused as refusal:
+        # The deterministic stage claimed this question and could not answer it
+        # as asked. That is a refusal, not a decline: there is no reasoning
+        # route for a question whose answer is one of a set of alternatives a
+        # model was never shown.
+        raise SolveRefused("unusable_result", str(refusal)) from refusal
     if solution is not None:
+        # An exact answer to a choice question is one of its choices by
+        # construction, and is checked anyway: this is the one claim about such
+        # an answer a consumer can verify, so it is verified before it leaves.
+        _held_to_the_choices(problem, solution.display)
         return _exact_result(solution, round((time.perf_counter() - started) * 1000, 3))
 
     run = reason(reasoning_prompt(problem))
