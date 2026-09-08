@@ -439,6 +439,7 @@ def solve_over_points(
             display=", ".join(values),
             parts=tuple(values),
             entry_mode="math",
+            form=PARTS,
             method=REGRESSION_METHOD,
             evidence=working,
         ),

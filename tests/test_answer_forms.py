@@ -23,6 +23,9 @@ and the test that reads it lives beside it.
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import pytest
 from test_solve_math import Reasoner
 
@@ -33,9 +36,17 @@ from facet_runtime.exact import (
     PARTS,
     SCALAR,
     solve_exact,
+    solve_over_points,
 )
 from facet_runtime.exact.quadrant import QUADRANT_METHOD
 from facet_runtime.solve import MathProblem, solve_math
+
+#: Every module that may construct an exact answer. Listed as a directory walk
+#: rather than by name, so a solver added in a new file is covered by the
+#: structural check below without anyone remembering to add it here.
+EXACT_SOURCES = tuple(
+    (Path(__file__).resolve().parents[1] / "src" / "facet_runtime").rglob("*.py")
+)
 
 #: The realness question, in the words Hawkes asks it in. Pulled out because a
 #: quoted phrase inside a quoted sentence reads badly inline.
@@ -121,6 +132,77 @@ def test_every_exact_family_names_its_form(
     assert solution is not None, decline
     assert solution.form == expected
     assert solution.form in ANSWER_FORMS
+
+
+def test_a_two_value_regression_is_a_parts_answer():
+    """Regression: it said `scalar` while carrying two values.
+
+    `solve_over_points` splits on how many values the question takes, and the
+    two-value branch was constructed without a `form`, so it took the dataclass
+    default -- `scalar` -- while carrying `parts=("9", "36")`. Nothing caught
+    it because `FAMILIES` above has no regression row and no test compared the
+    two fields to each other.
+
+    It was latent rather than live: the consumer still routes on `parts` and
+    only validates `form`. But the whole reason `form` exists is so a consumer
+    can stop parsing the string, and an answer that says `scalar` while holding
+    two values is exactly the misreport it was added to prevent.
+    """
+    solution, decline = solve_over_points(
+        "Treating revenue as a function of the number of photos sold, if she "
+        "uses quadratic regression to fit a curve to the data, what number of "
+        "photos sold and what price per photo will maximize her revenue?",
+        [("4", "224"), ("5", "260"), ("12", "288")],
+        2,
+    )
+
+    assert solution is not None, decline
+    assert solution.parts == ("9", "36")
+    assert solution.form == PARTS
+
+
+def test_a_one_value_regression_is_still_a_scalar():
+    """The other branch of the same split, so the fix cannot over-reach."""
+    solution, decline = solve_over_points(
+        "Treating revenue as a function of the number of photos sold, if she "
+        "uses quadratic regression to fit a curve to the data, what number of "
+        "photos sold will maximize her revenue?",
+        [("4", "224"), ("5", "260"), ("12", "288")],
+        1,
+    )
+
+    assert solution is not None, decline
+    assert solution.parts == ()
+    assert solution.entry == "9"
+    assert solution.form == SCALAR
+
+
+@pytest.mark.parametrize("path", sorted(EXACT_SOURCES))
+def test_no_emitter_carries_parts_without_saying_so(path):
+    """The structural invariant, held against the source rather than a corpus.
+
+    Fixing the regression's own branch fixes one site. What stops the next one
+    is this: every `ExactSolution(...)` that passes `parts` must also pass a
+    `form`, because the default is `scalar` and a silent default is how the
+    last one happened. A conditional form -- `SCALAR if single else PARTS` --
+    satisfies it, which is the shape the table completion already uses.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", "") == "ExactSolution"
+        ):
+            continue
+        named = {keyword.arg for keyword in node.keywords}
+        if "parts" in named and "form" not in named:
+            offenders.append(f"{path.name}:{node.lineno}")
+
+    assert offenders == [], (
+        f"{offenders} construct an ExactSolution with parts and no form, so it "
+        "defaults to scalar while carrying several values"
+    )
 
 
 def test_the_form_set_is_closed():
