@@ -22,7 +22,6 @@ import sympy
 from facet_runtime.exact.linear import rational
 from facet_runtime.exact.table import (
     TableRefused,
-    _order,
     _relation,
     _solutions,
 )
@@ -133,4 +132,7 @@ def solve_missing_coordinate(
     # reading that is not a guess.
     if len(found) != 1:
         return None, "the equation admits more than one missing coordinate"
-    return str(sorted(found, key=_order)[0]), ""
+    # Exactly one survived, and `_solutions` already returns them ordered, so
+    # there is nothing left to choose between. Re-sorting a one-element list
+    # read as though a tie-break happened here; it never does.
+    return str(found[0]), ""

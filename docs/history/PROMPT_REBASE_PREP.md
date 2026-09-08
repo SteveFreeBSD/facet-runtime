@@ -1,10 +1,19 @@
 # Prompt rebaseline: evidence pack
 
-> **Superseded in part.** This was written before the work, and §1-§7 describe
-> the state as it was then: the old prompt wording, the old model assignment,
-> and a failure whose cause was still unknown. It is kept as the record of what
-> was known beforehand. §8, at the end, records what the failure turned out to
-> be and what changed. Read that first if you want the current state.
+> **Historical.** This was written before the work, and §1-§7 describe the state
+> as it was then: the old prompt wording, the old model assignment, and a
+> failure whose cause was still unknown. It is kept as the record of what was
+> known beforehand, and as the measurement behind the reasoning-effort and
+> output-budget settings that shipped. §8 records what the failure turned out to
+> be.
+>
+> Nothing here is current instruction. Since it was written, §5.1 has also been
+> closed -- `tests/fixtures/prompts/` now holds a byte-exact golden file per
+> prompt shape, so a rewording is a diff a reviewer reads rather than a change
+> every substring assertion passes. The *Still open* note below predates that.
+> For the current state read [the README](../../README.md); the head shas, test
+> counts and command sheet in §7 and §9 belong to September 2026 and are no
+> longer the numbers to expect.
 
 Preparation only. Nothing here changes production behaviour, and no active
 prompt was edited to write it. Heads at the time of writing:

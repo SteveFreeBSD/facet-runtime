@@ -1,8 +1,11 @@
 """Facet remote protocol v2: one bounded intelligence request over stdin.
 
-A remote consumer -- Ethnos today, others later -- writes one JSON request to
-this helper's standard input and reads one JSON response from its standard
-output. That is the entire remote surface. A consumer may name only an
+A consumer -- Facet Hawkes Assistant today, whose Python package is still
+named `ethnos`, and others later -- writes one JSON request to this helper's
+standard input and reads one JSON response from its standard output. That is
+the entire surface. "Remote" here means out of process: the helper is normally
+started as a local subprocess, and the same protocol serves a genuinely remote
+consumer over `ssh` without changing. A consumer may name only an
 operation from a closed set and supply the text to execute; it cannot pass a
 shell command, a path, a URL, an environment, a runtime, a model, or a device.
 

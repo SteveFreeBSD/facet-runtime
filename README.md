@@ -1,16 +1,29 @@
 # Facet
 
-Facet is a clean local-AI development project for exploring explicit workload
-execution and routing across the AMD Ryzen AI 9 HX 370's three compute paths:
+**Facet answers questions.** A consumer hands it a question -- an instruction in
+words, the exact expressions or measurements the question is about, and how many
+separate values the answer takes -- and Facet decides how it gets answered,
+answers it, and reports which route it took. Deterministic exact mathematics
+runs first and settles most of it with no model, no accelerator and no network;
+only what genuinely falls past that reaches a reasoning model.
+
+It runs that work explicitly across the AMD Ryzen AI 9 HX 370's three compute
+paths, and proves where each run actually happened:
 
 - native CPU execution;
 - Radeon 890M GPU execution through Vulkan/RADV and Ollama; and
 - XDNA2 NPU execution through `amdxdna`, XRT, and FastFlowLM.
 
-This first pass deliberately contains no agent architecture. It establishes a
-small Python package, reproducible `uv` environment, hardware discovery, an
-explicit model assignment per device, and known-good runtime checks that later
-work can build on.
+Its one consumer today is **Facet Hawkes Assistant**, in the sibling
+`facet-hawkes` repository, which owns a browser and a page and hands Facet
+nothing about either. That boundary is deliberate and is described from the
+other side in [`facet-hawkes/docs/FACET_BRIDGE.md`](../facet-hawkes/docs/FACET_BRIDGE.md).
+Facet never learns which document, window, frame, field or editor a question
+came from, or that there is a browser at all.
+
+Start with [Remote protocol](#remote-protocol) for the wire, [Solver
+routing](#solver-routing) for how a question is answered, and [Model
+assignment](#model-assignment) for what runs where.
 
 ## Quick start
 
@@ -45,8 +58,16 @@ failed run rather than an answer.
 
 ## Remote protocol
 
-`facet-remote` is the only way another machine reaches Facet. It reads one JSON
-request on standard input and writes one JSON response on standard output. A
+`facet-remote` is the only way anything reaches Facet. It is normally a **local
+subprocess** -- the consumer runs the installed helper and writes to its
+standard input -- and the same helper serves a genuinely remote consumer over
+`ssh` unchanged, because the protocol never depended on a network. "Remote"
+here means *out of process*, not *off this machine*: the helper is the runtime,
+process and protocol boundary, and a subprocess draws that boundary as well as
+a connection does.
+
+It reads one JSON request on standard input and writes one JSON response on
+standard output. A
 consumer may name an operation from a closed set and supply the text to
 execute; it cannot pass a shell command, a path, a URL, an environment, a
 runtime, a model, or a device. Facet chooses where the work runs and reports
@@ -336,18 +357,36 @@ A reply that carries no final answer, or the wrong number of separate answers,
 is refused with `unusable_result` rather than returned. An answer of the wrong
 shape is worse than no answer, because a consumer would put it somewhere.
 
-### Deploying a protocol change
+### Deploying a change
 
-`facet-remote` on the host is a `uv tool` install, not the working tree, so a
-protocol change reaches a consumer only after:
+`facet-remote` on the host is a `uv tool` install, **not** the working tree.
+Nothing changed here -- a solver, a prompt, a model assignment, the protocol --
+reaches a consumer until it is reinstalled:
 
 ```bash
 uv tool install --force --reinstall .
 ```
 
-A helper left at the older version refuses every request from the newer client
-with `unsupported_version` rather than answering part of it, which is the right
-failure but is easy to mistake for a transport problem.
+A helper left at an older protocol version refuses every request from the newer
+client with `unsupported_version` rather than answering part of it, which is the
+right failure but is easy to mistake for a transport problem. A helper left at
+an older *solver* fails less loudly: it simply answers the way it used to.
+
+Check what is actually installed with one request:
+
+```bash
+echo '{"facet_protocol_version": 2, "operation": "solve_math",
+       "request_id": "probe-1",
+       "problem": {"instruction": "Simplify.", "expressions": ["(x+1)*(x-1)"],
+                   "answer_parts": 1}}' | facet-remote
+```
+
+The consumer pins this repository by commit. `facet-hawkes` imports
+`facet_runtime` as a path dependency at `../facet-runtime` and records the
+required commit in `facet-hawkes/deploy/facet-runtime.pin`; its
+`tests/test_runtime_pin.py` fails when that sibling checkout is behind. Raise
+the pin there in the same change that starts depending on something new here,
+and push this repository before that pin is published.
 
 ## Model assignment
 
@@ -487,6 +526,15 @@ tooling/fastflowlm/      Optional, isolated upstream runtime builds
 
 ## Scope boundary
 
-Facet currently detects and proves the local compute foundation. Backend
-abstractions, model lifecycle management, routing policy, tools, memory, and
-agent behavior belong to later milestones.
+Facet owns solver routing, exact deterministic mathematics, the reasoning
+route, the two graph specialists, model assignment, and the proof that a run
+happened where it says it did. It does not own, and will not accept, anything
+about where a question came from: a document, an element, a picture, an action,
+a device name, a model name, or a runtime. A consumer states a *need*; Facet
+chooses.
+
+Device routing today is the fixed GPU, NPU, CPU preference described above
+rather than a workload router. When a real device router arrives it takes over
+`_backend_for` in `remote.py` and the wire contract does not move, because a
+consumer already asks for a constraint rather than a device. Tools, memory and
+agent behaviour remain out of scope.
