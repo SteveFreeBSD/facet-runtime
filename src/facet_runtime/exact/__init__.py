@@ -10,9 +10,14 @@ from facet_runtime.exact.regression import (
 )
 from facet_runtime.exact.result import ExactCallResult, ExactDebugInfo
 from facet_runtime.exact.router import (
+    ANSWER_FORMS,
+    CHOICE,
     EXACT_METHOD,
     NO_OPERATION_MATCHED,
+    ORDERED_PAIR,
+    PARTS,
     REGRESSION_METHOD,
+    SCALAR,
     EntryMode,
     ExactlyRefused,
     ExactSolution,
@@ -41,9 +46,14 @@ from facet_runtime.exact.table import (
 )
 
 __all__ = [
+    "ANSWER_FORMS",
+    "CHOICE",
     "EXACT_METHOD",
     "NO_OPERATION_MATCHED",
+    "ORDERED_PAIR",
+    "PARTS",
     "REGRESSION_METHOD",
+    "SCALAR",
     "TABLE_METHOD",
     "AnswerTable",
     "EntryMode",

@@ -146,6 +146,29 @@ def entry_text(value: str, entry_mode: EntryMode) -> str | None:
     return None
 
 
+#: What *kind of thing* an answer is, beside what it says.
+#:
+#: The wire has always carried an answer as a string, so a consumer that has to
+#: type it into a real answer surface has had to rediscover its structure by
+#: parsing it -- and every new exact family has been found to be uninsertable
+#: only after it was already answering live questions. A midpoint returning
+#: `(17/2,-1/2)` is a pair *and* a rational at once, and nothing said so.
+#:
+#: This is deliberately the family and not a description of the value. What
+#: notation the value is written in stays readable from the value; what a
+#: consumer cannot recover cheaply, and needs before it can say whether it has
+#: a path at all, is which of these it is holding.
+#:
+#: A closed set. Growing it is a protocol change, and the point of it is that
+#: `docs/ANSWER_CAPABILITIES.md` on the consumer side must have a row for every
+#: member -- a path, or an explicit statement that there is not one.
+SCALAR = "scalar"
+ORDERED_PAIR = "ordered-pair"
+PARTS = "parts"
+CHOICE = "choice"
+ANSWER_FORMS: tuple[str, ...] = (SCALAR, ORDERED_PAIR, PARTS, CHOICE)
+
+
 @dataclass(frozen=True, slots=True)
 class ExactSolution:
     """One exactly computed answer, in the shape the question asked for.
@@ -161,6 +184,9 @@ class ExactSolution:
     entry: str = ""
     parts: tuple[str, ...] = ()
     entry_mode: EntryMode = "verbatim"
+    #: Which family this answer belongs to. `scalar` is the default because it
+    #: is what most exact answers are: one written value.
+    form: str = SCALAR
     method: str = EXACT_METHOD
     #: The working, when a solver computed one worth showing: the fitted
     #: coefficients, the turning point, the value there. Carried out as
@@ -199,6 +225,7 @@ def solve_table_completion(
             entry=done.parts[0] if single else "",
             parts=() if single else done.parts,
             entry_mode="math",
+            form=SCALAR if single else PARTS,
             method=TABLE_METHOD,
             evidence=done.evidence,
         ),
@@ -253,6 +280,7 @@ def solve_exact(
                     # rewriting it into entry syntax would damage it.
                     entry=choice,
                     entry_mode="verbatim",
+                    form=CHOICE,
                     method=QUADRANT_METHOD,
                 ),
                 "",
@@ -305,6 +333,7 @@ def solve_exact(
                     # answer: its parentheses are part of it, and rewriting it
                     # into entry syntax would damage it.
                     entry_mode="verbatim",
+                    form=ORDERED_PAIR,
                     method=MIDPOINT_METHOD,
                 ),
                 "",
@@ -428,7 +457,7 @@ def solve_vertex(expressions: list[str]) -> tuple[ExactSolution | None, str]:
         return None, "vertex requires a rational quadratic"
     # A vertex is one ordered pair, and its parentheses are part of the answer.
     pair = f"({h},{k})"
-    return ExactSolution(display=pair, entry=pair), ""
+    return ExactSolution(display=pair, entry=pair, form=ORDERED_PAIR), ""
 
 
 def solve_stated_linear_function(
@@ -538,9 +567,22 @@ def solve_points_on_quadratic(
         ),
     }
     if requested == 1:
-        return ExactSolution(display=pairs[0], entry=pairs[0], evidence=evidence), ""
+        return (
+            ExactSolution(
+                display=pairs[0],
+                entry=pairs[0],
+                form=ORDERED_PAIR,
+                evidence=evidence,
+            ),
+            "",
+        )
+    # Several ordered pairs. `parts` is the top-level family; that each part is
+    # itself a pair is a composition, and `ANSWER_CAPABILITIES.md` records it
+    # as one rather than pretending the two are the same shape.
     return (
-        ExactSolution(display=", ".join(pairs), parts=pairs, evidence=evidence),
+        ExactSolution(
+            display=", ".join(pairs), parts=pairs, form=PARTS, evidence=evidence
+        ),
         "",
     )
 
@@ -557,8 +599,10 @@ def classify_polynomial(
             if not value.is_polynomial(*value.free_symbols):
                 raise ValueError("fractional or negative exponent")
         except (SyntaxError, TypeError, ValueError, ZeroDivisionError):
-            return ExactSolution(display="Non-Polynomial", entry="Non-Polynomial")
-        return ExactSolution(display="Polynomial", entry="Polynomial")
+            return ExactSolution(
+                display="Non-Polynomial", entry="Non-Polynomial", form=CHOICE
+            )
+        return ExactSolution(display="Polynomial", entry="Polynomial", form=CHOICE)
     return None
 
 
@@ -604,7 +648,9 @@ def evaluate_real_radical(
         return None  # a value that depends on a variable is not this question
 
     if radicand.is_negative and index % 2 == 0:
-        return ExactSolution(display="Not a Real Number", entry="Not a Real Number")
+        return ExactSolution(
+            display="Not a Real Number", entry="Not a Real Number", form=CHOICE
+        )
     value = sympy.real_root(radicand, index)
     exact = sympy.nsimplify(value, rational=True)
     if not exact.is_rational:
@@ -630,7 +676,9 @@ def solve_one_equation(
     if isinstance(result, LinearEquationResult):
         if result.solution is None:
             return ExactSolution(
-                display=result.classification, entry=result.classification
+                display=result.classification,
+                entry=result.classification,
+                form=CHOICE,
             )
         if target is not None:
             return ExactSolution(
@@ -645,7 +693,9 @@ def solve_one_equation(
             entry=result.solution,
         )
     if not result.solutions:
-        return ExactSolution(display=result.classification, entry=result.classification)
+        return ExactSolution(
+            display=result.classification, entry=result.classification, form=CHOICE
+        )
     if len(result.solutions) == 1:
         return ExactSolution(
             display=result.display_text,
@@ -657,4 +707,5 @@ def solve_one_equation(
         display=result.display_text,
         parts=tuple(result.solutions),
         entry_mode="math",
+        form=PARTS,
     )

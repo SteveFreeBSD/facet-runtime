@@ -33,6 +33,9 @@ from typing import Any, Literal
 import sympy
 
 from facet_runtime.exact import (
+    CHOICE,
+    PARTS,
+    SCALAR,
     AnswerTable,
     EntryMode,
     ExactlyRefused,
@@ -511,15 +514,29 @@ def labelled_parts(text: str, expected: int) -> list[str] | None:
 
 
 def _answer(
-    display: str, entry: str, parts: tuple[str, ...], entry_mode: EntryMode
+    display: str,
+    entry: str,
+    parts: tuple[str, ...],
+    entry_mode: EntryMode,
+    form: str = SCALAR,
 ) -> dict[str, Any]:
-    """One answer to write down, tagged with the kind it is."""
+    """One answer to write down, tagged with the kind it is.
+
+    `form` says which *family* the answer belongs to -- a scalar, an ordered
+    pair, several separate values, a chosen alternative -- beside `entry_mode`,
+    which says how literally to take it. A consumer that has to enter the answer
+    into a real surface needs the family before it can say whether it has a path
+    for it at all, and until this existed it had to recover it by parsing the
+    string. Additive and optional: a reader that does not know the field reads
+    the same answer it always did.
+    """
     return {
         "kind": VALUE,
         "display": display,
         "entry": entry,
         "parts": list(parts),
         "entry_mode": entry_mode,
+        "form": form,
     }
 
 
@@ -537,7 +554,11 @@ def _exact_result(solution: ExactSolution, elapsed_ms: float) -> dict[str, Any]:
     return {
         "route": "exact",
         "answer": _answer(
-            solution.display, solution.entry, solution.parts, solution.entry_mode
+            solution.display,
+            solution.entry,
+            solution.parts,
+            solution.entry_mode,
+            solution.form,
         ),
         "provenance": {
             # The identity Facet answers to when it computed the answer itself.
@@ -688,7 +709,18 @@ def _reasoning_result(
             ) from error
     return {
         "route": "reasoning",
-        "answer": _answer(final_math, entry, parts, "auto"),
+        # The reasoning route's family is read off the shape it produced --
+        # several checked parts, one chosen alternative, or one written value.
+        # It never claims `ordered-pair`: no reasoned answer is held to that
+        # structure, and claiming a family nothing verified would be worse than
+        # claiming none.
+        "answer": _answer(
+            final_math,
+            entry,
+            parts,
+            "auto",
+            CHOICE if problem.answer_choices else (PARTS if parts else SCALAR),
+        ),
         "provenance": {
             # Where the work ran is reported, not assumed.
             "source": f"Facet Reasoning · {run.actual_backend.upper()}",
