@@ -40,6 +40,7 @@ from facet_runtime.exact import (
     EntryMode,
     ExactlyRefused,
     ExactSolution,
+    Relation,
     Representation,
     TableRefused,
     TableUnverifiable,
@@ -519,16 +520,23 @@ def _answer(
     parts: tuple[str, ...],
     entry_mode: EntryMode,
     form: str = SCALAR,
+    relation: Relation | None = None,
 ) -> dict[str, Any]:
     """One answer to write down, tagged with the kind it is.
 
     `form` says which *family* the answer belongs to -- a scalar, an ordered
-    pair, several separate values, a chosen alternative -- beside `entry_mode`,
-    which says how literally to take it. A consumer that has to enter the answer
-    into a real surface needs the family before it can say whether it has a path
-    for it at all, and until this existed it had to recover it by parsing the
-    string. Additive and optional: a reader that does not know the field reads
-    the same answer it always did.
+    pair, several separate values, a chosen alternative, an equation -- beside
+    `entry_mode`, which says how literally to take it. A consumer that has to
+    enter the answer into a real surface needs the family before it can say
+    whether it has a path for it at all, and until this existed it had to
+    recover it by parsing the string. Additive and optional: a reader that does
+    not know the field reads the same answer it always did.
+
+    `relation` is the one family whose answer is not a single value: an
+    equation has two sides, and which of them a consumer types depends on what
+    its own answer surface already states. Both are carried so that neither has
+    to be recovered by splitting `entry` -- the same rule `parts` follows, and
+    for the same reason.
     """
     return {
         "kind": VALUE,
@@ -537,6 +545,11 @@ def _answer(
         "parts": list(parts),
         "entry_mode": entry_mode,
         "form": form,
+        "relation": (
+            None
+            if relation is None
+            else {"subject": relation.subject, "value": relation.value}
+        ),
     }
 
 
@@ -559,6 +572,7 @@ def _exact_result(solution: ExactSolution, elapsed_ms: float) -> dict[str, Any]:
             solution.parts,
             solution.entry_mode,
             solution.form,
+            solution.relation,
         ),
         "provenance": {
             # The identity Facet answers to when it computed the answer itself.

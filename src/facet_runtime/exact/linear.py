@@ -101,6 +101,41 @@ RELATIVE_TO_ANOTHER_LINE = re.compile(
 #: left out.
 _STATES_NOTHING = re.compile(r"^[A-Za-z]\s*(?:\(\s*[A-Za-z]\s*\))?\s*=?$")
 
+#: A function the question names, by writing something it is applied to: a
+#: value of it, `f(0) = -3`, or the bare `f(x) =` an answer field is labelled
+#: with. One letter, because that is what Hawkes names a function with, and an
+#: argument that is a variable or a number, because those are the two things it
+#: writes inside the brackets.
+_NAMED_FUNCTION = re.compile(
+    rf"(?:^|[^A-Za-z])(?P<name>[A-Za-z])\s*\(\s*(?:[A-Za-z]|{_VALUE})\s*\)\s*="
+)
+
+#: The variable a line is written in. `render` writes `mx + b` in it, so the
+#: subject below is written as a function of the same one.
+VARIABLE = "x"
+
+
+def subject(instruction: str, expressions: list[str]) -> str:
+    """The left side of the equation this question asks for.
+
+    A line is two numbers and an equation stating them, and what stands on the
+    left of that equation is the question's to say. Hawkes says it by naming a
+    function -- writing one of its values, `f(0) = -3`, or labelling the answer
+    field `f(x) =` -- and says nothing when it asks for slope-intercept form,
+    which is written `y = mx + b` by definition.
+
+    So one name is that name, and none is `y`. More than one is `y` as well:
+    two named functions in one question is not a line stated under either of
+    them, and picking whichever was written first would be a guess about which
+    one the answer belongs to.
+    """
+    names = {
+        match.group("name")
+        for text in (instruction, *expressions)
+        for match in _NAMED_FUNCTION.finditer(text)
+    }
+    return f"{names.pop()}({VARIABLE})" if len(names) == 1 else "y"
+
 
 def rational(text: str) -> sympy.Rational | None:
     """One exact rational, or None when the text is not a number at all."""

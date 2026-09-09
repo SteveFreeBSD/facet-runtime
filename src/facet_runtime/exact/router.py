@@ -36,6 +36,7 @@ from facet_runtime.exact.linear import (
     LINEAR_REQUEST,
     render,
     solve_linear_function,
+    subject,
 )
 from facet_runtime.exact.midpoint import (
     MIDPOINT_METHOD,
@@ -166,7 +167,39 @@ SCALAR = "scalar"
 ORDERED_PAIR = "ordered-pair"
 PARTS = "parts"
 CHOICE = "choice"
-ANSWER_FORMS: tuple[str, ...] = (SCALAR, ORDERED_PAIR, PARTS, CHOICE)
+#: An answer that is an *equation* rather than a value: `y = -2x + 5`, which is
+#: what "the equation of the line in slope-intercept form" asks for. It is its
+#: own family because a consumer has two ways to enter it and has to choose:
+#: an answer surface that already states the subject takes the value alone, and
+#: one that states nothing takes the whole equation. Neither is recoverable
+#: from a value, which is why this was for a long time answered with the value
+#: and no way for anyone to tell.
+RELATION = "relation"
+ANSWER_FORMS: tuple[str, ...] = (SCALAR, ORDERED_PAIR, PARTS, CHOICE, RELATION)
+
+
+@dataclass(frozen=True, slots=True)
+class Relation:
+    """An answer that states one quantity equals another, kept as both sides.
+
+    `y` and `-2x+5`, never the string `y=-2x+5` alone. A consumer decides which
+    of the two its own answer surface takes, and recovering the boundary by
+    splitting the written form later is guessing at mathematics after the fact
+    -- the same argument that keeps `parts` separate from `display`. It matters
+    here for a reason a split would get wrong: `2x+y=5` is the same line in
+    standard form, and its left side is not something any page supplies.
+    """
+
+    #: What the equation is about, written as the question names it: `y` for a
+    #: line in slope-intercept form, `f(x)` where the question named a function.
+    subject: str
+    #: What the subject is equal to.
+    value: str
+
+    @property
+    def written(self) -> str:
+        """The whole equation, for a surface that states neither side itself."""
+        return f"{self.subject}={self.value}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +217,11 @@ class ExactSolution:
     entry: str = ""
     parts: tuple[str, ...] = ()
     entry_mode: EntryMode = "verbatim"
+    #: Both sides of the answer, when the answer is an equation. `entry` is
+    #: then the whole equation and this is what it is made of, so a consumer
+    #: whose answer surface states the subject itself can enter the value
+    #: alone without splitting the written form to find it.
+    relation: Relation | None = None
     #: Which family this answer belongs to. `scalar` is the default because it
     #: is what most exact answers are: one written value.
     form: str = SCALAR
@@ -464,22 +502,35 @@ def solve_vertex(expressions: list[str]) -> tuple[ExactSolution | None, str]:
 def solve_stated_linear_function(
     instruction: str, expressions: list[str], answer_parts: int
 ) -> tuple[ExactSolution | None, str]:
-    """Shape a derived line as the one answer a linear-function question takes.
+    """Shape a derived line as the equation a linear-function question asks for.
 
     The mathematics and its proof are in `facet_runtime.exact.linear`. What
-    happens here is only the shaping: `mx + b` is one value, it is mathematics
-    rather than a phrase, and the working travels with it as evidence so the
-    whole derivation can be redone from the same properties.
+    happens here is only the shaping, and for a long time it shaped the answer
+    wrongly: it returned `render(...)` -- the right-hand side of `y = mx + b`
+    -- as the whole answer. That is not the equation of a line, and it is only
+    an answer at all on a page that prints the left side beside its answer box.
+    Whether a page does that is not something Facet can know, and it does not
+    ask: `MathProblem` has no way to describe a page and gains none here.
+
+    So the answer is the whole equation, and both of its sides travel with it.
+    A consumer whose answer surface states the subject enters the value alone;
+    one whose surface states nothing enters the equation. That decision belongs
+    to whoever owns the page, and this side stops making it silently.
     """
     line, decline = solve_linear_function(instruction, expressions, answer_parts)
     if line is None:
         return None, decline
-    written = render(line.slope, line.intercept)
+    equation = Relation(
+        subject=subject(instruction, expressions),
+        value=render(line.slope, line.intercept),
+    )
     return (
         ExactSolution(
-            display=written,
-            entry=written,
+            display=equation.written,
+            entry=equation.written,
             entry_mode="math",
+            form=RELATION,
+            relation=equation,
             evidence=line.evidence,
         ),
         "",

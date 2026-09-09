@@ -1,7 +1,7 @@
 """Deterministic exact mathematics, the route Facet takes before reasoning."""
 
 from facet_runtime.exact.answer import extract_final_math
-from facet_runtime.exact.linear import solve_linear_function
+from facet_runtime.exact.linear import solve_linear_function, subject
 from facet_runtime.exact.regression import (
     NotThisQuestion,
     fit_quadratic,
@@ -17,10 +17,12 @@ from facet_runtime.exact.router import (
     ORDERED_PAIR,
     PARTS,
     REGRESSION_METHOD,
+    RELATION,
     SCALAR,
     EntryMode,
     ExactlyRefused,
     ExactSolution,
+    Relation,
     classify_polynomial,
     entry_text,
     evaluate_real_radical,
@@ -53,6 +55,7 @@ __all__ = [
     "ORDERED_PAIR",
     "PARTS",
     "REGRESSION_METHOD",
+    "RELATION",
     "SCALAR",
     "TABLE_METHOD",
     "AnswerTable",
@@ -62,6 +65,7 @@ __all__ = [
     "ExactSolution",
     "ExactlyRefused",
     "NotThisQuestion",
+    "Relation",
     "Representation",
     "TableRefused",
     "TableUnverifiable",
@@ -84,5 +88,6 @@ __all__ = [
     "solve_stated_linear_function",
     "solve_table_completion",
     "solve_vertex",
+    "subject",
     "verify_completion",
 ]

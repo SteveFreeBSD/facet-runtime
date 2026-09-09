@@ -34,6 +34,7 @@ from facet_runtime.exact import (
     CHOICE,
     ORDERED_PAIR,
     PARTS,
+    RELATION,
     SCALAR,
     solve_exact,
     solve_over_points,
@@ -100,6 +101,16 @@ FAMILIES = [
         [r"\sqrt{-100}"],
         {},
         CHOICE,
+    ),
+    (
+        "relation (a line in slope-intercept form)",
+        (
+            "Find the equation of the line in slope-intercept form that "
+            "passes through the following point with the given slope."
+        ),
+        ["(0,5)", "Slope=-2"],
+        {},
+        RELATION,
     ),
     (
         "choice (quadrant)",
@@ -244,7 +255,31 @@ def test_a_classification_is_still_a_literal():
 
 def test_the_form_set_is_closed():
     """Growing it is a protocol change, and one the consumer has to be told."""
-    assert ANSWER_FORMS == (SCALAR, ORDERED_PAIR, PARTS, CHOICE)
+    assert ANSWER_FORMS == (SCALAR, ORDERED_PAIR, PARTS, CHOICE, RELATION)
+
+
+def test_an_equation_carries_both_its_sides_and_nothing_else_does():
+    """The one family whose answer is not a single value.
+
+    A consumer has two ways to enter an equation and has to choose between
+    them, so both sides cross rather than one written form somebody splits
+    later. Every other family carries no relation at all, which is what makes
+    the field's presence the signal.
+    """
+    line, decline = solve_exact(
+        "Find the equation of the line in slope-intercept form that passes "
+        "through the following point with the given slope.",
+        ["(0,5)", "Slope=-2"],
+    )
+
+    assert line is not None, decline
+    assert line.form == RELATION
+    assert (line.relation.subject, line.relation.value) == ("y", "-2x+5")
+    assert line.entry == line.relation.written == "y=-2x+5"
+
+    scalar, decline = solve_exact("Simplify.", ["2+3"])
+    assert scalar is not None, decline
+    assert scalar.relation is None
 
 
 def test_the_form_crosses_on_the_answer_object():
@@ -259,7 +294,26 @@ def test_the_form_crosses_on_the_answer_object():
 
     assert result["answer"]["form"] == ORDERED_PAIR
     assert result["answer"]["display"] == "(17/2,-1/2)"
+    assert result["answer"]["relation"] is None
     assert result["provenance"]["method"] == "SymPy exact midpoint of two points"
+
+
+def test_an_equations_two_sides_cross_on_the_answer_object():
+    """The consumer reads them off the answer, beside `form`."""
+    result = solve_math(
+        MathProblem(
+            instruction=(
+                "Find the equation of the line in slope-intercept form that "
+                "passes through the following point with the given slope."
+            ),
+            expressions=("(0,5)", "Slope=-2"),
+        ),
+        reason=Reasoner(),
+    )
+
+    assert result["answer"]["form"] == RELATION
+    assert result["answer"]["entry"] == "y=-2x+5"
+    assert result["answer"]["relation"] == {"subject": "y", "value": "-2x+5"}
 
 
 @pytest.mark.parametrize(
