@@ -22,10 +22,20 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from facet_runtime.exact.answer import extract_final_math
+from facet_runtime.exact.consecutive import (
+    CONSECUTIVE_METHOD,
+    CONSECUTIVE_REQUEST,
+    solve_consecutive_sum,
+)
 from facet_runtime.exact.coordinate import (
     COORDINATE_METHOD,
     COORDINATE_REQUEST,
     solve_missing_coordinate,
+)
+from facet_runtime.exact.discount import (
+    DISCOUNT_METHOD,
+    DISCOUNT_REQUEST,
+    solve_discount,
 )
 from facet_runtime.exact.distance import (
     DISTANCE_METHOD,
@@ -305,6 +315,55 @@ def solve_exact(
         return solve_table_completion(expressions, table, answer_parts, representation)
     if points:
         return solve_over_points(instruction, points, answer_parts)
+    # A price and a percentage off it is one division, and which of the three
+    # quantities is wanted is stated in the question. Claimed here because
+    # nothing below reads a word problem at all: live, this fell through to a
+    # reasoning model, which did the arithmetic correctly on the wrong unknown
+    # and returned the discount where the original price was asked for.
+    if DISCOUNT_REQUEST.search(instruction):
+        amount, refusal = solve_discount(instruction, expressions)
+        if amount:
+            return (
+                ExactSolution(
+                    display=amount,
+                    entry=amount,
+                    entry_mode="math",
+                    method=DISCOUNT_METHOD,
+                ),
+                "",
+            )
+        # Named and never fallen through, for `solve_quadrant`'s reason: a
+        # model asked this question has to guess which unknown was wanted.
+        raise ExactlyRefused(refusal)
+
+    # A stated sum fixes an ordinary consecutive-integer sequence exactly.  The
+    # total is often inline MathJax and therefore arrives in `expressions` while
+    # the prose carries the sequence length and what the page asks for.
+    if CONSECUTIVE_REQUEST.search(instruction):
+        consecutive, refusal = solve_consecutive_sum(
+            instruction, expressions, answer_parts
+        )
+        if consecutive is None:
+            raise ExactlyRefused(refusal)
+        values = consecutive.values
+        single = len(values) == 1
+        return (
+            ExactSolution(
+                display=", ".join(values),
+                entry=values[0] if single else "",
+                parts=() if single else values,
+                entry_mode="math",
+                form=SCALAR if single else PARTS,
+                method=CONSECUTIVE_METHOD,
+                evidence={
+                    "first": str(consecutive.first),
+                    "count": str(consecutive.count),
+                    "total": str(consecutive.total),
+                },
+            ),
+            "",
+        )
+
     if not expressions:
         return None, "no exact expression was supplied"
 
