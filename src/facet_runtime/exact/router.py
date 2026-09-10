@@ -50,6 +50,12 @@ from facet_runtime.exact.quadrant import (
     solve_quadrant,
 )
 from facet_runtime.exact.regression import NotThisQuestion, regression_optimum
+from facet_runtime.exact.solution_kind import (
+    SolutionKindRefused,
+)
+from facet_runtime.exact.solution_kind import (
+    select as select_solution_kind,
+)
 from facet_runtime.exact.symbolic import (
     AbsoluteValueEquationResult,
     LinearEquationResult,
@@ -424,7 +430,7 @@ def solve_exact(
     if realness is not None:
         return realness, ""
 
-    equation = solve_one_equation(instruction, expressions)
+    equation = solve_one_equation(instruction, expressions, choices or [])
     if equation is not None:
         return equation, ""
 
@@ -710,16 +716,69 @@ def evaluate_real_radical(
     return ExactSolution(display=str(exact), entry=str(exact))
 
 
+def _as_published_choice(classification: str, choices: list[str]) -> ExactSolution:
+    """One solution-set classification, as the choice the page published.
+
+    Only ever reached with choices in hand. The algebra above stays in its own
+    vocabulary -- "Infinite Solutions" is what reducing both sides established,
+    and it is what a caller with no choice surface still receives -- and this
+    is where that fact is said in the words of the page that asked for it.
+
+    Refused rather than approximated, and never fallen through: a choice
+    question whose alternatives cannot state this answer is not one a model
+    should be asked, because it would have to guess which alternatives the page
+    offered before it could name one of them. That is the same argument
+    `solve_quadrant` makes and the same disposal it gets.
+    """
+    try:
+        published = select_solution_kind(classification, choices)
+    except SolutionKindRefused as refusal:
+        raise ExactlyRefused(str(refusal)) from refusal
+    return ExactSolution(
+        display=published,
+        # Already exactly what belongs in the answer: the page's own words for
+        # one of its own choices, which is what selects the control.
+        entry=published,
+        entry_mode="verbatim",
+        form=CHOICE,
+    )
+
+
 def solve_one_equation(
-    instruction: str, expressions: list[str]
+    instruction: str, expressions: list[str], choices: list[str] | None = None
 ) -> ExactSolution | None:
-    """Map one exact equation result onto the structured answer model."""
+    """Map one exact equation result onto the structured answer model.
+
+    `choices` are the alternatives a page published, when the question is asked
+    by choosing between them. Where they are given, a classification is
+    returned as one of them; where they are not, nothing about this function
+    changes -- which is what keeps the revealed-textbox lifecycle below intact,
+    since a revealed box is a field and publishes no choices at all.
+    """
     if _requested_operation(instruction) != "solve" or len(expressions) != 1:
         return None
     target = _requested_variable(instruction)
     result = solve_equation(expressions[0], variable=target)
     if result is None:
         return None
+    published = list(choices or [])
+    # A question asked by choosing is answered by choosing, whatever the algebra
+    # underneath it. `entry` on every branch below is a value to type, and this
+    # surface has no box to type one into: the page is showing its alternatives,
+    # and the answer is whichever of them states what the algebra established.
+    #
+    # "One Solution" keeps its value; it just is not entered here. Hawkes
+    # reveals a textbox once that choice is made, and that read is a field --
+    # one drawn box, no group, no choices published -- so it arrives with
+    # `choices` empty and takes the branches below exactly as it always has.
+    if published:
+        classification = getattr(result, "classification", None)
+        if classification is None:
+            raise ExactlyRefused(
+                "this question published alternatives to choose between and its "
+                "answer is a value rather than one of them"
+            )
+        return _as_published_choice(classification, published)
     if isinstance(result, AbsoluteValueEquationResult):
         # A solved value is mathematics and a classification is a phrase, so
         # they cannot share a mode. `verbatim` means "type exactly this", and
