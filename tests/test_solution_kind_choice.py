@@ -159,6 +159,18 @@ def test_a_named_variable_still_solves_to_its_value_without_choices():
         ("All Real Numbers", INFINITE_SOLUTIONS),
         ("ℝ", INFINITE_SOLUTIONS),
         ("  infinite   solutions  (ℝ)  ", INFINITE_SOLUTIONS),
+        # Hawkes sets the notation with MathJax, so what actually reaches a
+        # reader is not reliably the character on screen. These are the same
+        # label serialized the ways that rendering produces it: the MathML `R`
+        # behind the glyph, an assistive copy of the glyph after it, and the
+        # label repeated whole. The words have already said which fact it is.
+        ("Infinite Solutions (R)", INFINITE_SOLUTIONS),
+        ("Infinite Solutions (ℝ)ℝ", INFINITE_SOLUTIONS),
+        ("Infinite Solutions (ℝ)Infinite Solutions (ℝ)", INFINITE_SOLUTIONS),
+        ("Infinite Solutions (all real numbers)", INFINITE_SOLUTIONS),
+        ("No Solution (∅)∅", NO_SOLUTION),
+        ("No Solution (Ø)", NO_SOLUTION),
+        ("No Solution (empty set)", NO_SOLUTION),
     ],
 )
 def test_the_ways_a_page_may_write_each_fact(choice, kind):
@@ -180,14 +192,32 @@ def test_the_ways_a_page_may_write_each_fact(choice, kind):
         # would be choosing which half to believe.
         "No Solution (ℝ)",
         "Infinite Solutions (∅)",
-        # A notation this does not read. `R` is a variable far more often than
-        # it is the reals.
-        "Infinite Solutions (R)",
         "Infinite Solutions (all complex numbers)",
+        # A lone `R` with no words to protect it is a variable far more often
+        # than it is the reals.
+        "R",
+        "(R)",
     ],
 )
 def test_unrelated_or_unreadable_choice_text_states_nothing(choice):
     assert kind_of(choice) is None
+
+
+def test_a_gloss_may_not_contradict_the_words_it_glosses():
+    """The gloss is not what decides -- but a page stating two different facts
+    in one label is a page this cannot read, and believing either half of it
+    would be choosing which half to believe."""
+    assert kind_of("Infinite Solutions (∅)") is None
+    assert kind_of("No Solution (ℝ)") is None
+    assert kind_of("One Solution (∅)") is None
+
+
+def test_prose_after_the_words_is_not_a_gloss():
+    """The remainder is held to a closed vocabulary, so the words cannot be
+    used as a prefix to smuggle arbitrary text past this."""
+    assert kind_of("No Solution unless x is negative") is None
+    assert kind_of("One Solution or possibly none") is None
+    assert kind_of("Infinite Solutions in the complex plane") is None
 
 
 def test_more_than_one_solution_is_not_read_as_one_solution():

@@ -55,49 +55,75 @@ class SolutionKindRefused(Exception):
     """These choices cannot state this fact, and this says why."""
 
 
-#: How each fact may be written in words. Anchored whole: `_ONE` must not read
-#: "One Solution" out of "More Than One Solution", which states a different
-#: fact and would otherwise match on the tail of this pattern.
-_NO = re.compile(r"^no\s+solutions?$|^the\s+empty\s+set$|^empty\s+set$")
-_ONE = re.compile(
-    r"^(?:exactly\s+|precisely\s+)?one\s+solution$"
-    r"|^a?\s*unique\s+solution$"
-    r"|^one\s+unique\s+solution$"
-)
-_INFINITE = re.compile(
-    r"^infinite(?:ly)?\s+(?:many\s+)?solutions?$"
-    r"|^an?\s+infinite\s+number\s+of\s+solutions$"
-    r"|^all\s+real\s+numbers$"
-    r"|^the\s+set\s+of\s+all\s+real\s+numbers$"
+#: How each fact may be written, as the phrase a page leads with. Anchored at
+#: the start rather than over the whole string, because what follows the words
+#: is a gloss and is checked separately below -- and anchored at the start all
+#: the same, so "More Than One Solution" is not read as "One Solution".
+_PHRASES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^no\s+solutions?\b"), NO_SOLUTION),
+    (re.compile(r"^(?:the\s+)?empty\s+set\b"), NO_SOLUTION),
+    (re.compile(r"^(?:exactly\s+|precisely\s+)?one\s+solution\b"), ONE_SOLUTION),
+    (re.compile(r"^(?:a\s+|one\s+)?unique\s+solution\b"), ONE_SOLUTION),
+    (re.compile(r"^infinite(?:ly)?\s+(?:many\s+)?solutions?\b"), INFINITE_SOLUTIONS),
+    (
+        re.compile(r"^an?\s+infinite\s+(?:number|amount)\s+of\s+solutions?\b"),
+        INFINITE_SOLUTIONS,
+    ),
+    (
+        re.compile(r"^(?:the\s+set\s+of\s+)?all\s+real\s+numbers\b"),
+        INFINITE_SOLUTIONS,
+    ),
 )
 
-#: How each fact may be written as notation, in a parenthetical beside the
-#: words or standing alone as the whole choice. `R` is admitted only as the
-#: blackboard-bold letter: a bare capital R is a variable far more often than
-#: it is the reals, and reading one as the other is exactly the kind of guess
-#: this module refuses to make.
-_NOTATIONS: dict[str, str] = {
+#: How each fact may be written as notation, in the gloss beside the words or
+#: standing alone as the whole choice.
+#:
+#: Hawkes sets these with MathJax, so what the words are followed by is not
+#: reliably the character on screen: the same `ℝ` reaches a reader as `ℝ`, as
+#: the `R` its MathML carries, or twice over when an assistive copy is in the
+#: element too. Which of those it is does not change the answer -- the words
+#: have already said which fact this is -- so the gloss is not what decides.
+#: It only has to not contradict them.
+_GLOSSES: dict[str, str] = {
     "∅": NO_SOLUTION,
+    "⌀": NO_SOLUTION,
+    "ø": NO_SOLUTION,
     "{}": NO_SOLUTION,
+    "empty": NO_SOLUTION,
     "empty set": NO_SOLUTION,
     "the empty set": NO_SOLUTION,
+    "null set": NO_SOLUTION,
     "ℝ": INFINITE_SOLUTIONS,
+    "ℛ": INFINITE_SOLUTIONS,
+    "r": INFINITE_SOLUTIONS,
+    "reals": INFINITE_SOLUTIONS,
     "all reals": INFINITE_SOLUTIONS,
+    "real numbers": INFINITE_SOLUTIONS,
     "all real numbers": INFINITE_SOLUTIONS,
+    "the set of all real numbers": INFINITE_SOLUTIONS,
 }
 
-#: A notation carried beside the words, as Hawkes writes it: `(∅)`, `[ℝ]`.
-_PARENTHETICAL = re.compile(r"[\(\[\{]\s*(?P<notation>[^\)\]\}]+?)\s*[\)\]\}]\s*$")
+#: A gloss that may stand alone as the whole choice. Narrower than `_GLOSSES`:
+#: a page is free to offer `∅` itself as an alternative, but a lone `R` is a
+#: variable far more often than it is the reals, and reading one as the other
+#: with no words to go on is exactly the guess this module refuses to make.
+_STANDALONE = frozenset({"∅", "⌀", "{}", "ℝ", "empty set", "the empty set"})
+
+#: What separates one gloss from the next: the brackets a page wraps them in
+#: and the punctuation it puts between them. Not whitespace -- "all real
+#: numbers" is one gloss and splitting it into words would leave three that
+#: mean nothing on their own.
+_GLOSS_SEPARATORS = re.compile(r"[()\[\]{}|,;:/]+")
 
 
 def _normalized(text: str) -> str:
     """One choice, reduced to what can be compared without losing meaning.
 
-    Case and whitespace are presentation. So are the several dashes and the
-    several apostrophes a page may be authored with, and the compatibility
-    forms of the set symbols -- `ℝ` has a plain `R` as its compatibility
-    decomposition, so normalizing to NFKC here would silently turn the reals
-    into a letter this module refuses to read. NFC keeps them distinct.
+    Case and whitespace are presentation. So are the several dashes a page may
+    be authored with. The compatibility forms are not: `ℝ` decomposes to a
+    plain `R` under NFKC, which would silently turn the reals into a letter
+    this module reads only under the protection of the words beside it. NFC
+    keeps them distinct.
     """
     collapsed = unicodedata.normalize("NFC", text).replace("–", "-")
     return re.sub(r"\s+", " ", collapsed).strip().strip(".,;").casefold()
@@ -108,43 +134,49 @@ def kind_of(choice: str) -> str | None:
 
     None means unreadable, not "no". A page is free to offer a fourth
     alternative -- "Cannot be determined" -- and reading it as one of these
-    would be an answer to a question nobody asked.
+    would be answering a question nobody asked.
+
+    The words decide. What follows them is a gloss on the same fact, and is
+    held only to not stating a different one: `Infinite Solutions (ℝ)` and
+    `Infinite Solutions (R)` are one page's notation and another's, and both
+    say what their first two words already said. `Infinite Solutions (∅)` is a
+    page saying two contradictory things, and a reader that believed either
+    half of it would be choosing which half to believe.
     """
     text = _normalized(choice)
     if not text:
         return None
 
-    # A notation standing alone as the whole choice: a page is free to offer
-    # `∅` and `ℝ` as the alternatives themselves rather than as glosses. Read
-    # before the parenthetical below, so that `{}` is the empty set rather than
-    # a bracket around nothing.
-    standalone = _NOTATIONS.get(text)
-    if standalone is not None:
-        return standalone
+    # A gloss standing alone as the whole choice: `∅`, `ℝ`. Read before the
+    # words below, so `{}` is the empty set rather than an empty bracket.
+    if text in _STANDALONE:
+        return _GLOSSES[text]
 
-    notation: str | None = None
-    match = _PARENTHETICAL.search(text)
-    if match is not None:
-        # The words and the notation must state the *same* fact. "No Solution
-        # (ℝ)" is a page saying two contradictory things, and a reader that
-        # took either half of it would be choosing which half to believe.
-        notation = _NOTATIONS.get(_normalized(match.group("notation")))
-        if notation is None:
-            return None
-        text = text[: match.start()].strip()
+    stated = next(
+        ((match, kind) for pattern, kind in _PHRASES if (match := pattern.match(text))),
+        None,
+    )
+    if stated is None:
+        return None
+    match, kind = stated
+    phrase = match.group(0)
 
-    if not text:
-        # The notation stood alone and is the whole choice: `∅`, `ℝ`.
-        return notation
-
-    for pattern, kind in (
-        (_NO, NO_SOLUTION),
-        (_ONE, ONE_SOLUTION),
-        (_INFINITE, INFINITE_SOLUTIONS),
-    ):
-        if pattern.match(text):
-            return kind if notation in (None, kind) else None
-    return None
+    # Everything after the words, with the brackets and separators taken out.
+    # What is left must gloss the fact the words stated -- including those
+    # words a second time, which is how an element carrying an assistive copy
+    # of its own label reads.
+    remainder = text[match.end() :].replace(phrase, " ")
+    for segment in _GLOSS_SEPARATORS.split(remainder):
+        segment = segment.strip()
+        if not segment or _GLOSSES.get(segment) == kind:
+            continue
+        # Not one gloss whole, so it must be several written side by side --
+        # `(ℝ)ℝ` is the glyph and an assistive copy of it. Each has to be a
+        # gloss on this same fact in its own right.
+        if all(_GLOSSES.get(word) == kind for word in segment.split()):
+            continue
+        return None
+    return kind
 
 
 def select(kind: str, choices: list[str]) -> str:
