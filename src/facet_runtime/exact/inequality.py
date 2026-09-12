@@ -46,6 +46,17 @@ INEQUALITY_REQUEST = re.compile(r"\binequalit(?:y|ies)\b", re.IGNORECASE)
 #: family writes; set-builder and inequality notation are different answers to
 #: the same question, and are declined rather than silently replaced.
 _INTERVAL_NOTATION = re.compile(r"\binterval\s+notation\b", re.IGNORECASE)
+#: A question asking for the solution set to be graphed. The set is the same
+#: mathematics whichever way it is shown -- lesson 1.7 asks for it in interval
+#: notation in one step and on a number line in the next -- and drawing it is
+#: the consumer's business, so this returns the set exactly as it does for
+#: interval notation.
+_GRAPH_THE_SOLUTION = re.compile(
+    r"\b(?:graph|plot)\b[^.?!]*\bsolutions?\b", re.IGNORECASE
+)
+_OTHER_NOTATION = re.compile(
+    r"\bset[- ]builder\b|\binequality\s+notation\b", re.IGNORECASE
+)
 _DECIMAL_FORM = re.compile(
     r"\bdecimal\s+(?:form|notation)\b|\bas\s+decimals?\b", re.IGNORECASE
 )
@@ -270,10 +281,16 @@ def solve_linear_inequality(
     by hand above, comparison by comparison, and once by SymPy's own
     set reading of the conjunction as written.
     """
-    if not _INTERVAL_NOTATION.search(instruction):
+    if _OTHER_NOTATION.search(instruction) or not (
+        _INTERVAL_NOTATION.search(instruction)
+        or _GRAPH_THE_SOLUTION.search(instruction)
+    ):
         return (
             None,
-            "only an inequality answered in interval notation is solved exactly",
+            (
+                "only an inequality answered in interval notation, or graphed as "
+                "its solution set, is solved exactly"
+            ),
         )
     try:
         comparisons = read_comparisons(expressions)

@@ -241,7 +241,9 @@ def test_outside_the_family_is_declined_by_name(expressions, reason):
     "instruction",
     [
         "Solve the inequality. Write the answer in set-builder notation.",
-        "Solve the inequality and graph the solution on a number line.",
+        "Solve the inequality and write the answer in inequality notation.",
+        "Graph the solution set of the inequality in set-builder notation.",
+        "Solve the inequality.",
     ],
 )
 def test_a_notation_other_than_intervals_is_declined(instruction):
@@ -249,6 +251,24 @@ def test_a_notation_other_than_intervals_is_declined(instruction):
 
     assert solution is None
     assert "interval notation" in decline
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    [
+        "Consider the following compound inequality. Graph the solution set.",
+        "Solve the inequality and graph the solution on a number line.",
+        "Plot the solution set of the inequality.",
+    ],
+)
+def test_a_graphed_solution_set_is_the_same_exact_set(instruction):
+    """Drawing the set is the consumer's; the set itself is this solver's."""
+    solution, decline = solve_exact(instruction, [r"-24<3y-6\leq15"])
+
+    assert solution is not None, decline
+    assert solution.entry == "(-6,7]"
+    assert solution.form == SCALAR
+    assert solution.method == INEQUALITY_METHOD
 
 
 def test_a_declined_inequality_still_reaches_the_reasoning_route():
