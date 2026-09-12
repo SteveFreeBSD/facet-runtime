@@ -141,6 +141,30 @@ def states_an_inequality(expressions: list[str]) -> bool:
     return any(_OPERATOR.search(_normalized(item or "")) for item in expressions)
 
 
+#: A step that asks for one of the displayed inequalities by its position:
+#: "solve the first inequality", "the second inequality", "the last
+#: inequality". Singular on purpose -- "the inequalities" and "the compound
+#: inequality" ask for all of them at once.
+_ORDINAL = re.compile(
+    r"\b(?P<ordinal>first|second|third|fourth|fifth|last|1st|2nd|3rd|4th|5th)"
+    r"\s+inequality\b",
+    re.IGNORECASE,
+)
+_ORDINAL_POSITION = {
+    "first": 0,
+    "1st": 0,
+    "second": 1,
+    "2nd": 1,
+    "third": 2,
+    "3rd": 2,
+    "fourth": 3,
+    "4th": 3,
+    "fifth": 4,
+    "5th": 4,
+    "last": -1,
+}
+
+
 def read_comparisons(expressions: list[str]) -> list[Comparison]:
     """Every comparison the question states, or a named decline.
 
@@ -149,7 +173,18 @@ def read_comparisons(expressions: list[str]) -> list[Comparison]:
     required at once. "Or" asks for a union, which is not an interval and is
     declined.
     """
-    comparisons: list[Comparison] = []
+    return [item for statement in read_statements(expressions) for item in statement]
+
+
+def read_statements(expressions: list[str]) -> list[list[Comparison]]:
+    """The inequalities the question displays, each as its own comparisons.
+
+    One statement per inequality as written: a separate expression, or one
+    clause of an expression joined by "and". A chain `a < bx + c <= d` is one
+    inequality, two comparisons long. Kept apart so that a step asking for one
+    of them can be answered about that one, before anything is combined.
+    """
+    statements: list[list[Comparison]] = []
     for expression in expressions:
         text = _normalized(expression)
         if not _OPERATOR.search(text):
@@ -177,13 +212,54 @@ def read_comparisons(expressions: list[str]) -> list[Comparison]:
                 raise InequalityDeclined(
                     f"a side of the inequality could not be read exactly: {error}"
                 ) from error
-            comparisons.extend(
-                Comparison(parsed[index], operator, parsed[index + 1])
-                for index, operator in enumerate(operators)
+            statements.append(
+                [
+                    Comparison(parsed[index], operator, parsed[index + 1])
+                    for index, operator in enumerate(operators)
+                ]
             )
-    if not comparisons:
+    if not statements:
         raise InequalityDeclined("no inequality was written")
-    return comparisons
+    return statements
+
+
+def in_scope(
+    statements: list[list[Comparison]], instruction: str
+) -> tuple[list[list[Comparison]], str]:
+    """The inequalities this step asks about, and how it named them.
+
+    Hawkes displays a problem once and walks through it in steps: "solve the
+    first inequality", then "the second", then the compound inequality they
+    make together. Live, on 2026-09-12, step 1 displayed `-4(w-1) <= 28 and
+    1+w < 9` and asked for the first; every displayed comparison was
+    intersected regardless, and `[-6,8)` went into a box that wanted
+    `[-6,∞)`. The step decides the scope, and it is decided here -- before
+    anything is combined.
+
+    A step that names no single inequality asks about all of them, which is
+    what a compound inequality has always meant. A step naming more than one
+    position, or a position past the last displayed inequality, is declined
+    rather than guessed at.
+    """
+    named = {match.group("ordinal").lower() for match in _ORDINAL.finditer(instruction)}
+    if not named:
+        return statements, ""
+    count = len(statements)
+    positions = set()
+    for name in named:
+        position = _ORDINAL_POSITION[name]
+        position = count - 1 if position < 0 else position
+        if position >= count:
+            raise InequalityDeclined(
+                f"the step names inequality {position + 1} of {count} written"
+            )
+        positions.add(position)
+    # "The last" of two is the second, and says nothing new. Two different
+    # positions is a step about more than one of them, which is not this.
+    if len(positions) > 1:
+        raise InequalityDeclined("the step names more than one of the inequalities")
+    (position,) = positions
+    return [statements[position]], f"{position + 1} of {len(statements)}"
 
 
 def _variable(comparisons: list[Comparison]) -> sympy.Symbol:
@@ -388,7 +464,8 @@ def solve_linear_inequality(
             ),
         )
     try:
-        comparisons = read_comparisons(expressions)
+        statements, selected = in_scope(read_statements(expressions), instruction)
+        comparisons = [item for statement in statements for item in statement]
         variable = _variable(comparisons)
         solution: sympy.Set = sympy.S.Reals
         steps = []
@@ -421,6 +498,7 @@ def solve_linear_inequality(
             written=written,
             solution=solution,
             evidence={
+                **({"selected": selected} if selected else {}),
                 "variable": str(variable),
                 "comparisons": "; ".join(
                     f"{item.left} {item.operator} {item.right}" for item in comparisons

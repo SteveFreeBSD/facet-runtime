@@ -158,7 +158,9 @@ expression is split into the two comparisons it means, so `|ax+b| <= c` is an
 interval and `|ax+b| > c` is written as the union of two rays, `(-∞,1)∪(4,∞)`.
 It is claimed only when the question names an inequality, writes one, and asks
 for interval notation or a graph of the solution set, and it is checked against
-SymPy's own reading of the same conjunction. Non-linear inequalities, several
+SymPy's own reading of the same conjunction. Several displayed inequalities are
+intersected only when the step asks about them together: "solve the first
+inequality" answers the first alone, and naming two different ones is declined. Non-linear inequalities, several
 variables, more than one absolute value, a variable outside the bars, "or", a
 single-point solution, and a decimal that cannot be written exactly are declined
 by name.
