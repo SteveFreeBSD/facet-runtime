@@ -113,6 +113,13 @@ FAMILIES = [
         RELATION,
     ),
     (
+        "scalar interval (linear inequality)",
+        "Solve the inequality and express your answer in interval notation.",
+        [r"-33<3y-9\leq12"],
+        {},
+        SCALAR,
+    ),
+    (
         "choice (quadrant)",
         "In which quadrant does the point lie?",
         ["(3,-4)"],

@@ -149,6 +149,16 @@ over exact rationals, puts every stated property back into the result, and
 declines rather than answering when one of them does not hold, when the
 properties disagree, or when they leave the line undetermined.
 
+An inequality is answered the same way. `src/facet_runtime/exact/inequality.py`
+solves one-variable linear inequalities -- simple, chained like `a < bx + c <= d`,
+or joined by "and" -- over exact rationals, turning each comparison round when
+it divides by a negative, and returns the solution set in interval notation as
+a `scalar`: `(-8,7]`, `[5/2,∞)`, `(-∞,∞)` or `∅`. It is claimed only when the
+question names an inequality, writes one, and asks for interval notation, and it
+is checked against SymPy's own reading of the same conjunction. Non-linear
+inequalities, several variables, "or", a single-point solution, and a decimal
+that cannot be written exactly are declined by name.
+
 ```json
 {"route": "exact",
  "answer": {"display": "y^(23/20)", "entry": "y^(23/20)", "parts": [],

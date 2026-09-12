@@ -42,6 +42,12 @@ from facet_runtime.exact.distance import (
     DISTANCE_REQUEST,
     solve_point_distance,
 )
+from facet_runtime.exact.inequality import (
+    INEQUALITY_METHOD,
+    INEQUALITY_REQUEST,
+    solve_linear_inequality,
+    states_an_inequality,
+)
 from facet_runtime.exact.linear import (
     LINEAR_REQUEST,
     render,
@@ -392,6 +398,32 @@ def solve_exact(
         # answered from its own choices is not one a model should be asked --
         # it would be guessing at which alternatives the page offered.
         raise ExactlyRefused(refusal)
+
+    # An inequality is a comparison, and nothing below reads one: the equation
+    # solver and the symbolic operations all want an expression or an equals
+    # sign. Live, lesson 1.7's compound inequalities fell straight through to a
+    # reasoning model for an interval exact arithmetic settles. Claimed only
+    # when the question names an inequality *and* one is written; a decline
+    # names its gap and still reaches the reasoning route, because a quadratic
+    # or a union is a real question this family simply does not answer.
+    if INEQUALITY_REQUEST.search(instruction) and states_an_inequality(expressions):
+        solved, refusal = solve_linear_inequality(instruction, expressions)
+        if solved is None:
+            return None, refusal
+        return (
+            ExactSolution(
+                display=solved.written,
+                entry=solved.written,
+                # The solution set, written in interval notation. It is
+                # mathematics, and how its brackets are built is the
+                # consumer's decision.
+                entry_mode="math",
+                form=SCALAR,
+                method=INEQUALITY_METHOD,
+                evidence=solved.evidence,
+            ),
+            "",
+        )
 
     point_count = requested_quadratic_point_count(instruction)
     if point_count is not None:
