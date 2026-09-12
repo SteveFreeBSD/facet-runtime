@@ -153,11 +153,15 @@ An inequality is answered the same way. `src/facet_runtime/exact/inequality.py`
 solves one-variable linear inequalities -- simple, chained like `a < bx + c <= d`,
 or joined by "and" -- over exact rationals, turning each comparison round when
 it divides by a negative, and returns the solution set in interval notation as
-a `scalar`: `(-8,7]`, `[5/2,∞)`, `(-∞,∞)` or `∅`. It is claimed only when the
-question names an inequality, writes one, and asks for interval notation, and it
-is checked against SymPy's own reading of the same conjunction. Non-linear
-inequalities, several variables, "or", a single-point solution, and a decimal
-that cannot be written exactly are declined by name.
+a `scalar`: `(-8,7]`, `[5/2,∞)`, `(-∞,∞)` or `∅`. An absolute value of a linear
+expression is split into the two comparisons it means, so `|ax+b| <= c` is an
+interval and `|ax+b| > c` is written as the union of two rays, `(-∞,1)∪(4,∞)`.
+It is claimed only when the question names an inequality, writes one, and asks
+for interval notation or a graph of the solution set, and it is checked against
+SymPy's own reading of the same conjunction. Non-linear inequalities, several
+variables, more than one absolute value, a variable outside the bars, "or", a
+single-point solution, and a decimal that cannot be written exactly are declined
+by name.
 
 ```json
 {"route": "exact",

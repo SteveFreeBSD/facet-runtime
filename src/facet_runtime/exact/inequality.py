@@ -21,6 +21,15 @@ Deliberately a closed family. One variable; every side linear with rational
 coefficients; comparisons that are strict or not; any number of them joined by
 "and", chained or written separately. Everything else is declined with a named
 reason rather than approximated -- see `solve_linear_inequality`.
+
+An absolute value of a linear expression belongs to the same family, because it
+is two of these comparisons. `|ax+b| <= c` is `-c <= ax+b <= c`, an interval;
+`|ax+b| > c` is `ax+b < -c` or `ax+b > c`, which for a positive `c` is two rays
+and is written as their union. Live, on 2026-09-12, `|z + 3| <= 1` reached the
+parser as `Abs(z + 3)`, the linear route declined it as "not polynomial", and a
+reasoning model answered `(-∞,∞)` -- repeatedly -- for a set that is `[-4,-2]`.
+One absolute value per comparison, of an expression linear in the one variable,
+with nothing else in that variable beside it: anything more is declined.
 """
 
 from __future__ import annotations
@@ -231,6 +240,83 @@ def _ray(comparison: Comparison, variable: sympy.Symbol) -> tuple[sympy.Set, str
     return found, f"{variable} {operator} {bound}{turned}"
 
 
+def _linear(expression: sympy.Expr, variable: sympy.Symbol, what: str):
+    """`(slope, constant)` of a linear expression in the variable, or a decline."""
+    try:
+        polynomial = sympy.Poly(sympy.expand(expression), variable)
+    except sympy.PolynomialError as error:
+        raise InequalityDeclined(f"{what} that is not polynomial") from error
+    if polynomial.degree() > 1:
+        raise InequalityDeclined(f"{what} that is not linear")
+    slope = sympy.nsimplify(polynomial.coeff_monomial(variable))
+    constant = sympy.nsimplify(polynomial.coeff_monomial(1))
+    if not (slope.is_Rational and constant.is_Rational):
+        raise InequalityDeclined(f"{what} with a coefficient that is not rational")
+    return slope, constant
+
+
+#: The comparison an absolute value's lower branch makes: `|u| > c` holds
+#: where `u < -c`, and `|u| >= c` where `u <= -c`.
+_MIRRORED = {">": "<", ">=": "<="}
+
+
+def _solve(comparison: Comparison, variable: sympy.Symbol) -> tuple[sympy.Set, str]:
+    """One comparison, with or without an absolute value in it."""
+    residual = sympy.expand(comparison.left - comparison.right)
+    absolutes = residual.atoms(sympy.Abs)
+    if not absolutes:
+        return _ray(comparison, variable)
+    if len(absolutes) != 1:
+        raise InequalityDeclined("an inequality with more than one absolute value")
+    (absolute,) = absolutes
+    inner = absolute.args[0]
+    if variable not in inner.free_symbols:
+        raise InequalityDeclined("an absolute value with no variable in it")
+
+    # The comparison as `scale*|u| + offset op 0`, with the variable nowhere
+    # but inside the bars. `|x - 1| < x` is a real question, and not this one.
+    marker = sympy.Dummy("absolute")
+    outside = sympy.expand(residual.subs(absolute, marker))
+    if variable in outside.free_symbols:
+        raise InequalityDeclined(
+            "an absolute-value inequality with the variable outside the bars"
+        )
+    scale, offset = _linear(outside, marker, "an absolute-value inequality")
+    if scale == 0:
+        raise InequalityDeclined("an absolute value that cancels out")
+    _linear(inner, variable, "an absolute value")
+
+    # Isolate the absolute value. Dividing by a negative scale turns the
+    # comparison round, exactly as it does for the variable itself.
+    operator = comparison.operator
+    if scale < 0:
+        operator = _REVERSED[operator]
+    bound = -offset / scale
+    isolated = f"|{inner}| {operator} {bound}"
+
+    if operator in ("<", "<="):
+        # Never true below zero, and `|u| < 0` never at all. `|u| <= 0` is the
+        # single point `u = 0`, which the two branches below produce and which
+        # is then refused as not an interval rather than written as one.
+        if bound < 0 or (bound == 0 and operator == "<"):
+            return sympy.S.EmptySet, f"{isolated} is never true"
+        lower, lower_step = _ray(Comparison(-bound, operator, inner), variable)
+        upper, upper_step = _ray(Comparison(inner, operator, bound), variable)
+        return sympy.Intersection(lower, upper), (
+            f"{isolated} means {-bound} {operator} {inner} {operator} {bound}: "
+            f"{lower_step}; {upper_step}"
+        )
+    # `|u| > c` and `|u| >= c`: always true below zero, and `|u| >= 0` always.
+    if bound < 0 or (bound == 0 and operator == ">="):
+        return sympy.S.Reals, f"{isolated} is always true"
+    lower, lower_step = _ray(Comparison(inner, _MIRRORED[operator], -bound), variable)
+    upper, upper_step = _ray(Comparison(inner, operator, bound), variable)
+    return sympy.Union(lower, upper), (
+        f"{isolated} means {inner} {_MIRRORED[operator]} {-bound} or "
+        f"{inner} {operator} {bound}: {lower_step}; {upper_step}"
+    )
+
+
 def _endpoint(value: sympy.Expr, decimal: bool) -> str:
     if value == sympy.oo:
         return "∞"
@@ -255,11 +341,20 @@ def _endpoint(value: sympy.Expr, decimal: bool) -> str:
 
 
 def write_interval(solution: sympy.Set, decimal: bool = False) -> str:
-    """A solution set in interval notation, or a named decline."""
+    """A solution set in interval notation, or a named decline.
+
+    A union of disjoint intervals is written left to right joined by `∪`,
+    which is how interval notation writes the solution of `|u| > c`.
+    """
     if solution == sympy.S.EmptySet:
         return "∅"
     if solution == sympy.S.Reals:
         return "(-∞,∞)"
+    if isinstance(solution, sympy.Union):
+        pieces = sorted(solution.args, key=lambda piece: piece.inf)
+        if not all(isinstance(piece, sympy.Interval) for piece in pieces):
+            raise InequalityDeclined("the solution set is not a union of intervals")
+        return "∪".join(write_interval(piece, decimal) for piece in pieces)
     if not isinstance(solution, sympy.Interval):
         # A single point, where a <= and a >= meet. `[3,3]` is not how that
         # set is written, and `{3}` is not interval notation.
@@ -298,8 +393,8 @@ def solve_linear_inequality(
         solution: sympy.Set = sympy.S.Reals
         steps = []
         for comparison in comparisons:
-            ray, step = _ray(comparison, variable)
-            solution = sympy.Intersection(solution, ray)
+            found, step = _solve(comparison, variable)
+            solution = sympy.Intersection(solution, found)
             steps.append(step)
 
         stated = sympy.And(
