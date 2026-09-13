@@ -11,6 +11,7 @@ returned.
 from __future__ import annotations
 
 import ast
+import math
 import re
 from dataclasses import dataclass
 from fractions import Fraction
@@ -320,6 +321,10 @@ def solve_linear_equation(
         symbol = next((item for item in symbols if item.name == variable), None)
         if symbol is None:
             return None
+    if _divides_by(symbol, left_text, right_text):
+        # Undefined wherever a divisor is zero, which the reduced sides cannot
+        # show. The rational solver holds every root to that; this one cannot.
+        return None
     difference = sympy.expand(left - right)
     try:
         polynomial = sympy.Poly(difference, symbol)
@@ -375,6 +380,9 @@ def solve_absolute_value_equation(
         symbol = next((item for item in symbols if item.name == variable), None)
         if symbol is None:
             return None
+    if _divides_by(symbol, left_text, right_text):
+        # The rational solver's, for `solve_linear_equation`'s reason.
+        return None
 
     try:
         inner = sympy.Poly(absolute.args[0], symbol)
@@ -482,6 +490,9 @@ def solve_polynomial_equation(
         symbol = next((item for item in symbols if item.name == variable), None)
         if symbol is None or symbols != {symbol}:
             return None
+    if _divides_by(symbol, left_text, right_text):
+        # The rational solver's, for `solve_linear_equation`'s reason.
+        return None
     try:
         polynomial = sympy.Poly(sympy.expand(left - right), symbol)
     except sympy.PolynomialError:
@@ -530,27 +541,6 @@ class RationalEquationResult:
         return " or ".join(f"{self.variable} = {value}" for value in self.solutions)
 
 
-def _denominators_of(expression: sympy.Expr, symbol: sympy.Symbol) -> list[sympy.Expr]:
-    """Everything this expression divides by that involves the unknown.
-
-    Read from the expression as written rather than from a single combined
-    fraction. `together` and `cancel` are entitled to remove a common factor,
-    and a cancelled factor is a restriction that has silently disappeared:
-    `(x^2-4)/(x-2) = 0` cancels to `x+2 = 0`, which would offer two roots for
-    a question that admits one, because the equation as asked is not defined
-    at two at all.
-    """
-    found: list[sympy.Expr] = []
-    for part in sympy.preorder_traversal(expression):
-        if part.is_Pow and part.exp.is_negative and part.base.has(symbol):
-            found.append(part.base)
-    unique: list[sympy.Expr] = []
-    for item in found:
-        if not any(sympy.simplify(item - seen) == 0 for seen in unique):
-            unique.append(item)
-    return unique
-
-
 def solve_rational_equation(
     expression: str, *, variable: str | None = None
 ) -> RationalEquationResult | None:
@@ -589,7 +579,14 @@ def solve_rational_equation(
         if symbol is None or symbols != {symbol}:
             return None
 
-    restrictions = _denominators_of(left, symbol) + _denominators_of(right, symbol)
+    # From the equation as written, never from the parsed sides: by then SymPy
+    # may have cancelled the very factor a restriction comes from.
+    restrictions = [
+        denominator
+        for text in (left_text, right_text)
+        for denominator in _written_denominators(text)
+        if symbol in denominator.free_symbols
+    ]
     if not restrictions:
         # Nothing is divided by the unknown, so this is not the shape this
         # solver exists for. The polynomial paths own it.
@@ -1047,7 +1044,105 @@ def _safe_sympy_expression(
         tree.body,
         positive_symbols=positive_symbols,
         imaginary_unit=imaginary_unit,
+        source=normalized,
     )
+
+
+def _written_denominators(expression: str) -> list[sympy.Expr]:
+    """Everything an expression divides by, read from how it is written.
+
+    `_evaluate` divides with SymPy, and SymPy cancels a common factor on the
+    spot, so `(x-2)/(x-2)` is `1` before any solver sees it -- and with it goes
+    the only evidence that the expression is undefined at `x = 2`. Audit F02:
+    `(x-2)/(x-2) = x-1` was answered `x = 2`. `together` and `cancel` are
+    entitled to remove such a factor too, and `(x^2-4)/(x-2) = 0` cancels to
+    `x+2 = 0`. So the restrictions are taken from the syntax instead: the right
+    side of every division and the base of every negative power, each evaluated
+    on its own, before any arithmetic can make it disappear.
+    """
+    normalized = _python_expression(expression)
+    tree = ast.parse(normalized, mode="eval")
+    found: list[sympy.Expr] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.BinOp):
+            continue
+        if isinstance(node.op, ast.Div):
+            found.append(_evaluate(node.right, source=normalized))
+        elif (
+            isinstance(node.op, ast.Pow)
+            and _evaluate(node.right, source=normalized).is_negative
+        ):
+            found.append(_evaluate(node.left, source=normalized))
+    return found
+
+
+def _divides_by(symbol: sympy.Symbol, *texts: str) -> bool:
+    """Whether any of these expressions, as written, divides by the symbol."""
+    return any(
+        symbol in denominator.free_symbols
+        for text in texts
+        for denominator in _written_denominators(text)
+    )
+
+
+#: How many terms an expression may take once multiplied out. Coursework stays
+#: far inside this -- `(x+1)^64` is 65 terms, `(a+b+c)^10` is 66 -- and the
+#: audit's 167-byte `(a+b+c+d+e+f+g+h)^64` is 1,329,890,705 of them, which
+#: exhausted memory with its exponent comfortably inside the exponent limit.
+_MAX_EXPANDED_TERMS = 20_000
+
+
+def _expanded_terms(expression: sympy.Expr) -> int:
+    """An upper bound on the terms `expand` could write this expression as.
+
+    Counted from its shape rather than by expanding it, which is the work being
+    budgeted: a sum has as many terms as its parts, a product as many as their
+    product, and an integer power of `t` terms at most `C(t+k-1, k)` -- before
+    anything cancels, which is the side to err on.
+    """
+    if expression.is_Add:
+        return sum(_expanded_terms(term) for term in expression.args)
+    if expression.is_Mul:
+        total = 1
+        for factor in expression.args:
+            total *= _expanded_terms(factor)
+        return total
+    if expression.is_Pow and expression.exp.is_Integer and expression.exp != 0:
+        power = abs(int(expression.exp))
+        return math.comb(_expanded_terms(expression.base) + power - 1, power)
+    return max((_expanded_terms(argument) for argument in expression.args), default=1)
+
+
+#: The highest total degree an expression may reach. Width is not the only
+#: growth: `((a+b)^64)^64` is 4,097 terms, well inside the term budget, and took
+#: eight seconds to expand, because each term carries a coefficient thousands of
+#: digits long. Measured on this host, `simplify` on a degree-256 power stays
+#: near a tenth of a second and doubles about every doubling after that; 256 is
+#: also four times the largest exponent a question may write.
+_MAX_DEGREE = 256
+
+
+def _degree_bound(expression: sympy.Expr) -> int:
+    """An upper bound on the total degree of an expression, from its shape."""
+    if expression.is_Symbol:
+        return 1
+    if expression.is_Add:
+        return max(_degree_bound(term) for term in expression.args)
+    if expression.is_Mul:
+        return sum(_degree_bound(factor) for factor in expression.args)
+    if expression.is_Pow and expression.exp.is_Rational:
+        return _degree_bound(expression.base) * abs(int(expression.exp.p))
+    return max((_degree_bound(argument) for argument in expression.args), default=0)
+
+
+def _within_budget(expression: sympy.Expr) -> sympy.Expr:
+    """The expression, or a refusal if multiplying it out is past the budget."""
+    if (
+        _expanded_terms(expression) > _MAX_EXPANDED_TERMS
+        or _degree_bound(expression) > _MAX_DEGREE
+    ):
+        raise ValueError("the expression expands past the exact solver's budget")
+    return expression
 
 
 def _python_expression(expression: str) -> str:
@@ -1132,11 +1227,17 @@ def _evaluate(
     *,
     positive_symbols: bool = False,
     imaginary_unit: bool = False,
+    source: str = "",
 ) -> sympy.Expr:
     if isinstance(node, ast.Constant) and isinstance(node.value, int):
         return sympy.Integer(node.value)
     if isinstance(node, ast.Constant) and isinstance(node.value, float):
-        return sympy.Rational(Fraction(str(node.value)))
+        # From the digits as written. By now Python has made the literal a
+        # binary float, and `str` of that is its shortest round trip rather
+        # than the decimal on the page: audit F09, `0.10000000000000001 - 0.1`
+        # simplified to exactly 0.
+        written = ast.get_source_segment(source, node) if source else None
+        return sympy.Rational(Fraction(written or str(node.value)))
     if isinstance(node, ast.Name) and node.id == "pi":
         return sympy.pi
     if isinstance(node, ast.Name) and len(node.id) == 1 and node.id.isalpha():
@@ -1157,6 +1258,7 @@ def _evaluate(
             node.operand,
             positive_symbols=positive_symbols,
             imaginary_unit=imaginary_unit,
+            source=source,
         )
         return value if isinstance(node.op, ast.UAdd) else -value
     if (
@@ -1170,6 +1272,7 @@ def _evaluate(
             node.args[0],
             positive_symbols=positive_symbols,
             imaginary_unit=imaginary_unit,
+            source=source,
         )
         return (
             value ** sympy.Rational(1, 2)
@@ -1181,20 +1284,25 @@ def _evaluate(
             node.left,
             positive_symbols=positive_symbols,
             imaginary_unit=imaginary_unit,
+            source=source,
         )
         right = _evaluate(
             node.right,
             positive_symbols=positive_symbols,
             imaginary_unit=imaginary_unit,
+            source=source,
         )
         if isinstance(node.op, ast.Add):
             return left + right
         if isinstance(node.op, ast.Sub):
             return left - right
+        # A product or a power is where a short expression gets large, so each
+        # one is held to the budget as it is built rather than when something
+        # downstream finally expands it.
         if isinstance(node.op, ast.Mult):
-            return left * right
+            return _within_budget(left * right)
         if isinstance(node.op, ast.Div):
-            return left / right
+            return _within_budget(left / right)
         if isinstance(node.op, ast.Pow):
             safe_integer = right.is_Integer and -64 <= int(right) <= 64
             # Any small rational, not only a unit fraction: these sections ask
@@ -1210,7 +1318,7 @@ def _evaluate(
             )
             if not (safe_integer or safe_rational):
                 raise ValueError("exponent is outside the safe exact range")
-            return left**right
+            return _within_budget(left**right)
     raise ValueError(f"unsupported symbolic syntax: {type(node).__name__}")
 
 

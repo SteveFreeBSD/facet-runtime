@@ -29,9 +29,11 @@ DECIMAL = f"{ASK} Use decimal form for numerical values."
 
 
 def written(expressions: list[str], instruction: str = ASK) -> str:
-    solved, decline = solve_linear_inequality(instruction, expressions)
-    assert solved is not None, decline
-    return solved.written
+    """The router's answer, so the consumer's capability gate sees every one."""
+    solution, decline = solve_exact(instruction, expressions)
+    assert solution is not None, decline
+    assert solution.method == INEQUALITY_METHOD
+    return solution.entry
 
 
 def declined(expressions: list[str], instruction: str = ASK) -> str:
@@ -230,7 +232,8 @@ def test_infinity_is_never_a_closed_end(solution, text):
         (["2<3"], "no variable"),
         (["<2x+1"], "missing one of its sides"),
         (["1<2x+"], "could not be read exactly"),
-        ([r"\frac{1}{x}<2"], "not polynomial"),
+        # Refused as written, before a cancelled factor could hide the divisor.
+        ([r"\frac{1}{x}<2"], "divides by its variable"),
     ],
 )
 def test_outside_the_family_is_declined_by_name(expressions, reason):

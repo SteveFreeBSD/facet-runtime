@@ -880,6 +880,17 @@ def solve_one_equation(
                 entry=result.solutions[0],
                 entry_mode="math",
             )
+        if result.solutions:
+            # Two roots are two answers, as they are for a polynomial below.
+            # "Two Solutions" was once published here, and a page taking the
+            # roots could be given neither (audit F08); a count of solutions is
+            # an answer only where it is a published choice, answered above.
+            return ExactSolution(
+                display=result.display_text,
+                parts=tuple(result.solutions),
+                entry_mode="math",
+                form=PARTS,
+            )
         return ExactSolution(display=result.display_text, entry=result.classification)
     if isinstance(result, LinearEquationResult):
         if result.solution is None:

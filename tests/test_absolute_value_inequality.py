@@ -10,10 +10,10 @@ the absolute value is isolated by a negative, exact rational and decimal
 endpoints, the empty set and the whole line where the bound says so, a union
 where `>` or `>=` needs one, and a named decline for everything else.
 
-Tests that go through the router use integer or decimal endpoints: the
-consumer's capability gate observes every answer this suite builds, and a
-rational endpoint in interval notation is not a composition it has declared
-yet. Rational endpoints are held at the solver itself.
+Every answer these hold is read from the router. The consumer's capability gate
+observes the answers this suite builds, and an answer held at the solver is one
+it never sees: rational endpoints were once held there because the gate had not
+declared them, and a live question was answered with one all the same.
 """
 
 from __future__ import annotations
@@ -29,9 +29,10 @@ DECIMAL = f"{ASK} Use decimal form for numerical values."
 
 
 def written(expression: str, instruction: str = ASK) -> str:
-    solved, decline = solve_linear_inequality(instruction, [expression])
-    assert solved is not None, decline
-    return solved.written
+    solution, decline = solve_exact(instruction, [expression])
+    assert solution is not None, decline
+    assert solution.method == INEQUALITY_METHOD
+    return solution.entry
 
 
 def declined(expression: str, instruction: str = ASK) -> str:
@@ -124,11 +125,11 @@ def test_negating_both_sides_without_turning_the_comparison_is_another_set():
 
 
 def test_isolating_by_a_negative_turns_the_comparison_round():
-    solved, _ = solve_linear_inequality(ASK, ["-3|x+2|<-6"])
+    solution, _ = solve_exact(ASK, ["-3|x+2|<-6"])
 
-    assert solved is not None
-    assert solved.written == "(-∞,-4)∪(0,∞)"
-    assert "> 2" in solved.evidence["steps"]
+    assert solution is not None
+    assert solution.entry == "(-∞,-4)∪(0,∞)"
+    assert "> 2" in solution.evidence["steps"]
 
 
 def test_a_chain_around_an_absolute_value_is_both_comparisons():
@@ -194,7 +195,8 @@ def test_a_single_point_is_not_written_as_an_interval():
     ("expression", "reason"),
     [
         ("|x^2-4|<1", "not linear"),
-        (r"|\frac{1}{x}|<2", "not polynomial"),
+        # Refused as written, before a cancelled factor could hide the divisor.
+        (r"|\frac{1}{x}|<2", "divides by its variable"),
         ("|x+y|<2", "exactly one variable"),
         ("|x-1|<x", "variable outside the bars"),
         ("|x|+|x-1|<3", "could not be read exactly"),

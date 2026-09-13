@@ -91,7 +91,7 @@ def _expression_candidates(text: str) -> list[str]:
 def _parse_polynomial(expression: str) -> Polynomial:
     python_expression = _python_expression(expression)
     tree = ast.parse(python_expression, mode="eval")
-    return _evaluate(tree.body)
+    return _evaluate(tree.body, python_expression)
 
 
 def _python_expression(expression: str) -> str:
@@ -116,32 +116,38 @@ def _normal_display(expression: str) -> str:
     return re.sub(r"\s+", "", normalized)
 
 
-def _evaluate(node: ast.AST) -> Polynomial:
+def _evaluate(node: ast.AST, source: str) -> Polynomial:
     if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        return {(): Fraction(str(node.value))}
+        # The digits as written, not the binary float Python has already made
+        # of a decimal literal -- the reason `symbolic._evaluate` gives.
+        written = ast.get_source_segment(source, node)
+        return {(): Fraction(written or str(node.value))}
     if isinstance(node, ast.Name) and len(node.id) == 1 and node.id.isalpha():
         return {((node.id, 1),): Fraction(1)}
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        value = _evaluate(node.operand)
+        value = _evaluate(node.operand, source)
         return value if isinstance(node.op, ast.UAdd) else _scale(value, Fraction(-1))
     if isinstance(node, ast.BinOp):
         if isinstance(node.op, ast.Add):
-            return _add(_evaluate(node.left), _evaluate(node.right))
+            return _add(_evaluate(node.left, source), _evaluate(node.right, source))
         if isinstance(node.op, ast.Sub):
             return _add(
-                _evaluate(node.left), _scale(_evaluate(node.right), Fraction(-1))
+                _evaluate(node.left, source),
+                _scale(_evaluate(node.right, source), Fraction(-1)),
             )
         if isinstance(node.op, ast.Mult):
-            return _multiply(_evaluate(node.left), _evaluate(node.right))
+            return _multiply(
+                _evaluate(node.left, source), _evaluate(node.right, source)
+            )
         if isinstance(node.op, ast.Div):
-            denominator = _evaluate(node.right)
+            denominator = _evaluate(node.right, source)
             if set(denominator) != {()}:
                 raise ValueError("polynomial division is unsupported")
-            return _scale(_evaluate(node.left), 1 / denominator[()])
+            return _scale(_evaluate(node.left, source), 1 / denominator[()])
         if isinstance(node.op, ast.Pow):
             exponent = _constant_nonnegative_integer(node.right)
             result: Polynomial = {(): Fraction(1)}
-            base = _evaluate(node.left)
+            base = _evaluate(node.left, source)
             for _ in range(exponent):
                 result = _multiply(result, base)
             return result
@@ -177,7 +183,15 @@ def _add(left: Polynomial, right: Polynomial) -> Polynomial:
     return result
 
 
+#: The most monomial pairs one multiplication may combine. The exponent limit
+#: bounds a power's degree but not its width: `(a+b+...+z)^12` is within it and
+#: is billions of terms. Every product is held to this before it is formed.
+_MAX_PRODUCT_TERMS = 20_000
+
+
 def _multiply(left: Polynomial, right: Polynomial) -> Polynomial:
+    if len(left) * len(right) > _MAX_PRODUCT_TERMS:
+        raise ValueError("the product expands past the exact solver's budget")
     result: Polynomial = {}
     for left_monomial, left_coefficient in left.items():
         for right_monomial, right_coefficient in right.items():

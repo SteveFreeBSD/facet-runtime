@@ -41,7 +41,7 @@ from fractions import Fraction
 
 import sympy
 
-from facet_runtime.exact.symbolic import _safe_sympy_expression
+from facet_runtime.exact.symbolic import _safe_sympy_expression, _written_denominators
 
 #: The name this solver answers to.
 INEQUALITY_METHOD = "SymPy exact linear inequality"
@@ -208,10 +208,18 @@ def read_statements(expressions: list[str]) -> list[list[Comparison]]:
                 raise InequalityDeclined("a chain of more than two comparisons")
             try:
                 parsed = [_safe_sympy_expression(side) for side in sides]
+                divisors = [
+                    divisor for side in sides for divisor in _written_denominators(side)
+                ]
             except (SyntaxError, TypeError, ValueError, ZeroDivisionError) as error:
                 raise InequalityDeclined(
                     f"a side of the inequality could not be read exactly: {error}"
                 ) from error
+            # Read from the sides as written. `(x-2)/(x-2) + x < 5` parses to
+            # `1 + x < 5`, and `(-∞,4)` would then be written for a set that
+            # leaves out 2 -- the cancelled factor was the only sign of it.
+            if any(divisor.free_symbols for divisor in divisors):
+                raise InequalityDeclined("an inequality that divides by its variable")
             statements.append(
                 [
                     Comparison(parsed[index], operator, parsed[index + 1])

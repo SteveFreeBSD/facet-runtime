@@ -251,13 +251,55 @@ def test_a_solved_value_is_mathematics_and_not_a_literal(equation, entry):
 
 
 def test_a_classification_is_still_a_literal():
-    """The other half of the same branch, so the fix cannot over-reach: "Two
-    Solutions" is a phrase and is typed, or selected, exactly as written."""
-    solution, decline = solve_exact("Solve the equation.", ["|2x-1|=4"])
+    """The other half of the same branch, so the fix cannot over-reach: "No
+    Solution" is a phrase and is typed, or selected, exactly as written."""
+    solution, decline = solve_exact("Solve the equation.", ["|2x-1|=-4"])
 
     assert solution is not None, decline
-    assert solution.entry == "Two Solutions"
+    assert solution.entry == "No Solution"
     assert solution.entry_mode == "verbatim"
+
+
+@pytest.mark.parametrize(
+    ("instruction", "equation", "answer_parts", "roots"),
+    [
+        ("Solve the equation. Enter both solutions.", "|x|=2", 2, ("-2", "2")),
+        ("Solve the equation.", "|2x-1|=4", 1, (r"\frac{-3}{2}", r"\frac{5}{2}")),
+    ],
+)
+def test_two_absolute_value_roots_are_two_answers(
+    instruction, equation, answer_parts, roots
+):
+    """Audit F08: `|x|=2`, asked for both solutions, answered "Two Solutions".
+
+    Both roots were computed and shown, and neither could be entered. Several
+    roots are several values, as the polynomial branch has always published
+    them. A count of solutions is an answer only where the page offers it as a
+    choice, and a question that publishes choices is answered before this.
+    """
+    solution, decline = solve_exact(instruction, [equation], answer_parts=answer_parts)
+
+    assert solution is not None, decline
+    assert solution.parts == roots
+    assert solution.entry == ""
+    assert solution.entry_mode == "math"
+    assert solution.form == PARTS
+
+
+def test_two_absolute_value_roots_cross_the_wire_as_parts():
+    """The audit's own reproduction, at the boundary a consumer reads."""
+    result = solve_math(
+        MathProblem(
+            instruction="Solve the equation. Enter both solutions.",
+            expressions=("|x|=2",),
+            answer_parts=2,
+        ),
+        reason=Reasoner(),
+    )
+
+    assert result["route"] == "exact"
+    assert result["answer"]["parts"] == ["-2", "2"]
+    assert result["answer"]["form"] == PARTS
 
 
 def test_the_form_set_is_closed():

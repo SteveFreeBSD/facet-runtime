@@ -106,6 +106,106 @@ def test_the_three_questions_are_told_apart():
     )
 
 
+#: Audit F03, 2026-09-12: "The original price of a coat is . It is discounted
+#: 20%. What is the sale price?" answered 80.00. The original price was looked
+#: for anywhere in the question, and the sentence *stating* the price named it.
+#: Each is stated in prose and as MathJax leaves it -- the numbers moved into
+#: expressions, a hole left in the sentence.
+STATED_ORIGINAL_80 = [
+    ("The original price of a coat is $80.00. It is discounted 20%.", []),
+    ("The original price of a coat is . It is discounted 20%.", ["80"]),
+    ("The original price of a coat is . It is discounted .", ["$80.00", "20%"]),
+]
+STATED_SALE_64 = [
+    (
+        "A coat is on sale for $64.00. It was discounted 20% from its original price.",
+        [],
+    ),
+    (
+        "A coat is on sale for . This is with a discount from the original price.",
+        ["$*64.00", "20%"],
+    ),
+]
+
+
+@pytest.mark.parametrize(("stated", "expressions"), STATED_ORIGINAL_80 + STATED_SALE_64)
+@pytest.mark.parametrize(
+    ("asked", "expected"),
+    [
+        ("What is the sale price?", "64.00"),
+        ("What is the sale price after the discount?", "64.00"),
+        ("How much is the discount?", "16.00"),
+        ("What was the original price?", "80.00"),
+    ],
+)
+def test_what_is_wanted_is_read_from_what_the_question_asks(
+    stated, expressions, asked, expected
+):
+    """Same coat, both prices, all three questions. A price a question states
+    is never the price it asks for unless that is what it asks."""
+    result = answer(f"{stated} {asked}", expressions)
+
+    assert result["answer"]["entry"] == expected
+    assert result["route"] == "exact"
+
+
+def test_a_request_asks_for_the_first_quantity_it_names():
+    """ "The sale price after a 20% discount" names the discount as what the
+    sale price comes after. It was answered as the discount, 16.00."""
+    assert (
+        solve_discount(
+            "A coat has a regular price of $80.00. "
+            "What is the sale price after a 20% discount?",
+            [],
+        )[0]
+        == "64.00"
+    )
+
+
+@pytest.mark.parametrize(
+    ("instruction", "expressions"),
+    [
+        ("If a coat costs $80.00, what is the sale price after a 20% discount?", []),
+        ("A coat costs . What is the sale price after a 20% discount?", ["80"]),
+    ],
+)
+def test_what_a_question_asks_never_says_which_price_it_stated(
+    instruction, expressions
+):
+    """The same defect from the other side. "...the sale price after a 20%
+    discount" describes the price asked for, and was read as describing the
+    price stated -- so $80.00 became a sale price, and the answer 20.00. Nothing
+    left in what these state says which side of the discount it is on."""
+    answerable, refusal = solve_discount(instruction, expressions)
+
+    assert answerable == ""
+    assert "before or after the discount" in refusal
+
+
+def test_a_price_stated_before_the_request_in_one_sentence_is_still_read():
+    """Separating the request must not lose the statement it shares a sentence
+    with."""
+    assert (
+        solve_discount(
+            "If a shirt originally costs $40.00, what is the sale price after 25% off?",
+            [],
+        )[0]
+        == "30.00"
+    )
+
+
+def test_a_question_asking_for_two_of_them_is_declined():
+    """One answer cannot be both, and taking either is a pick nobody asked for."""
+    answerable, refusal = solve_discount(
+        "A coat originally priced at $80.00 is discounted 20%. "
+        "Find the sale price. How much is the discount?",
+        [],
+    )
+
+    assert answerable == ""
+    assert "does not say whether it wants" in refusal
+
+
 def test_a_question_that_does_not_say_which_is_declined():
     """Guessing here is how the discount is offered as the original price."""
     answerable, refusal = solve_discount(

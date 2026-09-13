@@ -36,26 +36,41 @@ DISCOUNT_REQUEST = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-#: What the question is asking for. Ordered: the discount amount is looked for
-#: first because "how much was the discount" also contains the word "price"
-#: often enough that a price pattern would swallow it.
+#: Where a question asks rather than states: from an asking word to the end of
+#: its sentence, and a decimal point inside a price does not end one.
+#:
+#: The two readings below are held apart by this. Audit F03, 2026-09-12: "The
+#: original price of a coat is . It is discounted 20%. What is the sale price?"
+#: answered 80.00, because the sentence stating the price named the original
+#: price and the whole question was read for what it wanted.
+_REQUEST = re.compile(
+    r"\b(?:what|how\s+much|find|determine|calculate|compute)\b.*?(?:[.?!](?=\s|$)|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: What each quantity is called when it is asked for. A request wants the first
+#: one it names: in "the sale price after the discount" the discount is what
+#: the sale price comes after, not what is wanted. The order only breaks a tie.
 _DISCOUNT_AMOUNT = re.compile(
-    r"(?:how\s+much|what)\b[^.?!]*?\b(?:was|is|were)?\s*(?:the\s+)?"
-    r"(?:amount\s+of\s+(?:the\s+)?discount|discount\s+amount|discount)\b"
-    r"|\bhow\s+much\b[^.?!]*?\b(?:saved?|savings?|reduced\s+by|taken\s+off)\b",
+    r"\b(?:amount\s+of\s+(?:the\s+)?discount|discount\s+amount|discount)\b"
+    r"|\b(?:saved?|savings?|reduced\s+by|taken\s+off)\b",
     re.IGNORECASE,
 )
 _ORIGINAL_PRICE = re.compile(
     r"\b(?:original|list|regular|pre-?sale|before\s+the\s+discount|full)\s+"
     r"(?:price|cost|amount)\b"
-    r"|\bprice\s+before\b|\bcost\s+before\b"
-    r"|\bwhat\s+(?:was|is)\s+the\s+price\s+(?:before|prior)\b",
+    r"|\b(?:price|cost)\s+(?:before|prior)\b",
     re.IGNORECASE,
 )
 _SALE_PRICE = re.compile(
     r"\b(?:sale|discounted|final|new|reduced)\s+(?:price|cost|amount)\b"
-    r"|\bprice\s+after\b|\bcost\s+after\b|\bhow\s+much\b[^.?!]*\bpay\b",
+    r"|\b(?:price|cost)\s+after\b|\b(?:pays?|paid)\b",
     re.IGNORECASE,
+)
+_WANTED = (
+    (_DISCOUNT_AMOUNT, "discount"),
+    (_ORIGINAL_PRICE, "original"),
+    (_SALE_PRICE, "sale"),
 )
 
 #: Whether the price a sentence states is the price before the discount or the
@@ -144,21 +159,33 @@ def _sentence_around(question: str, match: re.Match[str] | None) -> str:
     return question[start:end]
 
 
+def _statements(question: str) -> str:
+    """The question with what it asks blanked out, leaving what it states.
+
+    Blanked rather than cut, so a sentence ends where it ended and nothing is
+    joined to whatever followed the request.
+    """
+    return _REQUEST.sub(lambda request: " " * len(request.group()), question)
+
+
 def asked_for(question: str) -> str | None:
     """Which of the three quantities the question wants, or None.
 
-    None means the wording did not say. The same two numbers answer all three
-    and every answer is a plausible price, so guessing here is how the discount
-    amount gets offered as the original price.
+    Read from what the question asks and from nothing it states. None means the
+    wording did not say, or asked for two of them. The same two numbers answer
+    all three and every answer is a plausible price, so guessing here is how
+    the discount amount gets offered as the original price.
     """
-    for pattern, name in (
-        (_DISCOUNT_AMOUNT, "discount"),
-        (_ORIGINAL_PRICE, "original"),
-        (_SALE_PRICE, "sale"),
-    ):
-        if pattern.search(question):
-            return name
-    return None
+    wanted: set[str] = set()
+    for request in _REQUEST.finditer(question):
+        named = [
+            (found.start(), name)
+            for pattern, name in _WANTED
+            if (found := pattern.search(request.group()))
+        ]
+        if named:
+            wanted.add(min(named, key=lambda item: item[0])[1])
+    return wanted.pop() if len(wanted) == 1 else None
 
 
 def _expression_quantities(expressions: list[str]) -> tuple[list[str], list[str]]:
@@ -242,10 +269,13 @@ def solve_discount(instruction: str, expressions: list[str]) -> tuple[str, str]:
     # Which price was stated is a separate reading from which is wanted, and
     # both are needed: "originally priced at $79, discounted 20%, how much is
     # the discount" and "on sale for $63.20 after 20% off, how much was the
-    # discount" state one number each and mean different ones.
-    price_in_prose = _MONEY.search(instruction)
-    price_context = price_in_prose or _PRICE_HOLE.search(instruction)
-    clause = _sentence_around(instruction, price_context)
+    # discount" state one number each and mean different ones. It is read from
+    # what the question states: "...what is the sale price after a 20%
+    # discount?" describes the price asked for, never the one given.
+    statements = _statements(instruction)
+    price_in_prose = _MONEY.search(statements)
+    price_context = price_in_prose or _PRICE_HOLE.search(statements)
+    clause = _sentence_around(statements, price_context)
     before = _STATED_IS_ORIGINAL.search(clause) is not None
     after = _STATED_IS_SALE.search(clause) is not None
     if before == after:
