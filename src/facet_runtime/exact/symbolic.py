@@ -669,6 +669,7 @@ def solve_equation(
     """Route one equation through the exact solvers that can own its shape."""
     for solver in (
         solve_absolute_value_equation,
+        solve_affine_radical_equation,
         solve_rational_equation,
         solve_polynomial_equation,
         solve_linear_equation,
@@ -677,6 +678,56 @@ def solve_equation(
         if result is not None:
             return result
     return None
+
+
+def solve_affine_radical_equation(
+    expression: str, *, variable: str | None = None
+) -> LinearEquationResult | None:
+    """Solve one indexed root of an affine expression equal to a rational.
+
+    Raising both sides to an even power introduces a false root when the
+    stated right side is negative. Odd roots use the real branch, including
+    negative values, so checking the radicand and that sign is sufficient.
+    Other radical shapes remain with the solvers that follow.
+    """
+    candidate = expression.strip().strip("$`").rstrip(".,;")
+    if candidate.count("=") != 1:
+        return None
+    left_text, right_text = candidate.split("=", 1)
+    try:
+        left = _safe_sympy_expression(left_text)
+        right = _safe_sympy_expression(right_text)
+    except (SyntaxError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    if right.free_symbols and not left.free_symbols:
+        left, right = right, left
+    if not isinstance(left, sympy.Pow) or not left.exp.is_Rational:
+        return None
+    index = left.exp.q
+    if left.exp.p != 1 or not 2 <= index <= 24 or not right.is_Rational:
+        return None
+    symbols = left.base.free_symbols
+    if len(symbols) != 1:
+        return None
+    (symbol,) = symbols
+    if variable is not None and symbol.name != variable:
+        return None
+    try:
+        polynomial = sympy.Poly(left.base, symbol)
+    except sympy.PolynomialError:
+        return None
+    if polynomial.degree() != 1:
+        return None
+    if index % 2 == 0 and right < 0:
+        return LinearEquationResult("No Solution", symbol.name)
+    coefficient = polynomial.coeff_monomial(symbol)
+    constant = polynomial.coeff_monomial(1)
+    solution = sympy.cancel((right**index - constant) / coefficient)
+    if solution.is_Rational is not True:
+        return None
+    if sympy.simplify(left.base.subs(symbol, solution) - right**index) != 0:
+        return None
+    return LinearEquationResult("One Solution", symbol.name, _display(solution))
 
 
 def _assume_positive(problem_text: str, candidate: str, operation: str) -> bool:

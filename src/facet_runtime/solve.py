@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any, Literal
 
 import sympy
@@ -630,6 +631,27 @@ def _renders(display: str, values: tuple[str, ...] | list[str]) -> bool:
     return all(value.strip() and value.strip() in display for value in values)
 
 
+_FINITE_DECIMAL = re.compile(r"[+-]?(?:\d+\.\d+|\.\d+)")
+
+
+def _fraction_requested(instruction: str) -> bool:
+    """Whether the question explicitly asks for a reduced fraction form."""
+    lowered = instruction.lower()
+    return (
+        "fraction" in lowered
+        and ("lowest terms" in lowered or "reduced fraction" in lowered)
+        and "round" not in lowered
+    )
+
+
+def _reduced_fraction_if_decimal(value: str) -> str:
+    """Preserve a reasoner's stated finite decimal value in requested form."""
+    if _FINITE_DECIMAL.fullmatch(value.strip()) is None:
+        return value
+    rational = Fraction(value.strip())
+    return str(rational)
+
+
 def _reasoning_result(
     problem: MathProblem, run: RunResult, decline: str, elapsed_ms: float
 ) -> dict[str, Any]:
@@ -691,6 +713,14 @@ def _reasoning_result(
             "unusable_result",
             "the reasoning route answered with prose rather than with an answer",
         )
+    if _fraction_requested(problem.instruction) and not problem.answer_choices:
+        if parts:
+            rendered = tuple(_reduced_fraction_if_decimal(value) for value in parts)
+            if rendered != parts:
+                parts = rendered
+                final_math = ", ".join(parts)
+        else:
+            entry = final_math = _reduced_fraction_if_decimal(final_math)
     # A reasoned answer to a grid is proved against that grid before it becomes
     # an answer. The reasoning route is stochastic and the shape of its reply is
     # not evidence about the mathematics in it: five parts arriving is not five

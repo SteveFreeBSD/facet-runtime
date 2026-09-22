@@ -131,6 +131,75 @@ def test_a_declined_question_reaches_the_reasoning_route_and_says_why() -> None:
     assert result["provenance"]["fallback"] is False
 
 
+def test_affine_indexed_radical_equation_is_exact_and_returns_a_reduced_fraction() -> (
+    None
+):
+    result = solve_math(
+        problem(
+            instruction=(
+                "Solve the following radical equation. If needed, write your "
+                "answer as a fraction reduced to lowest terms."
+            ),
+            expressions=(r"\sqrt[3]{8x-5}=4",),
+        ),
+        reason=refuses,
+    )
+
+    assert result["route"] == "exact"
+    assert result["answer"]["entry"] == r"\frac{69}{8}"
+    assert result["provenance"]["router"] == "solved"
+
+
+@pytest.mark.parametrize(
+    ("expression", "entry"),
+    [
+        (r"\sqrt[3]{2x+1}=-3", "-14"),
+        (r"\sqrt{2x+1}=-3", "No Solution"),
+        (r"3=\sqrt[3]{2x+1}", "13"),
+    ],
+)
+def test_affine_radical_equation_uses_the_real_root_branch(expression, entry) -> None:
+    result = solve_math(
+        problem(
+            instruction="Solve the following radical equation.",
+            expressions=(expression,),
+        ),
+        reason=refuses,
+    )
+
+    assert result["answer"]["entry"] == entry
+
+
+def test_reasoning_decimal_is_reduced_when_the_question_requests_a_fraction() -> None:
+    reasoner = Reasoner(text="FINAL ANSWER: 8.625")
+    result = solve_math(
+        problem(
+            instruction=(
+                "Find the value. If needed, write your answer as a fraction "
+                "reduced to lowest terms."
+            ),
+            expressions=("f(x)=x^5+1",),
+        ),
+        reason=reasoner,
+    )
+
+    assert result["route"] == "reasoning"
+    assert result["answer"]["entry"] == "69/8"
+    assert result["answer"]["display"] == "69/8"
+
+
+def test_reasoning_decimal_keeps_its_form_without_a_fraction_request() -> None:
+    result = solve_math(
+        problem(
+            instruction="Find the value rounded to three decimal places.",
+            expressions=("f(x)=x^5+1",),
+        ),
+        reason=Reasoner(text="FINAL ANSWER: 8.625"),
+    )
+
+    assert result["answer"]["entry"] == "8.625"
+
+
 def test_the_reasoning_prompt_carries_the_question_and_no_page() -> None:
     reasoner = Reasoner()
 
