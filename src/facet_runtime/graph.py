@@ -35,12 +35,16 @@ import json
 import math
 import re
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any
+
+from facet_runtime.exact.intercepts import AffineLine, Coordinate, affine_line
 
 #: The result kinds a consumer may ask for beyond an ordinary value.
 PARABOLA_PLAN = "parabola_plan"
 QUADRATIC_REGRESSION = "quadratic_regression"
 POINT_PLOT_PLAN = "point_plot_plan"
+LINEAR_GRAPH_PLAN = "linear_graph_plan"
 
 #: How many points a plotting question may ask for. Hawkes draws one draggable
 #: control per point, and a question asking for none or for dozens is not the
@@ -58,6 +62,9 @@ RATIONAL = re.compile(r"-?(?:0|[1-9][0-9]*)(?:/[1-9][0-9]*)?\Z")
 GRAPH_FAMILY = "parabola"
 GRAPH_ORIENTATION = "vertical"
 GRAPH_CONTROLS = "vertex-and-symmetric-points"
+LINE_GRAPH_FAMILY = "line"
+LINE_GRAPH_ORIENTATION = "cartesian"
+LINE_GRAPH_CONTROLS = "two-points"
 
 MIN_REGRESSION_POINTS = 3
 MAX_REGRESSION_POINTS = 32
@@ -122,14 +129,17 @@ def _exact_keys(payload: Any, expected: tuple[str, ...], where: str) -> dict[str
 
 
 def parse_graph_context(payload: Any) -> GraphContext:
-    """Read the geometry a parabola plan is drawn on, or refuse it."""
+    """Read the normalized geometry a function plan is drawn on."""
     fields = _exact_keys(
         payload, ("family", "orientation", "bounds", "snap", "controls"), "graph"
     )
-    if fields["family"] != GRAPH_FAMILY or fields["orientation"] != GRAPH_ORIENTATION:
-        raise PlanRefused(f"only a {GRAPH_ORIENTATION} {GRAPH_FAMILY} is supported")
-    if fields["controls"] != GRAPH_CONTROLS:
-        raise PlanRefused(f"only {GRAPH_CONTROLS} controls are supported")
+    supported = {
+        (GRAPH_FAMILY, GRAPH_ORIENTATION, GRAPH_CONTROLS),
+        (LINE_GRAPH_FAMILY, LINE_GRAPH_ORIENTATION, LINE_GRAPH_CONTROLS),
+    }
+    identity = (fields["family"], fields["orientation"], fields["controls"])
+    if identity not in supported:
+        raise PlanRefused("the graph family, orientation and controls do not agree")
     bounds, snap = fields["bounds"], fields["snap"]
     if not isinstance(bounds, list) or len(bounds) != 4:
         raise PlanRefused("graph bounds must be four numbers")
@@ -351,3 +361,126 @@ def build_point_plot_plan(instruction: str, expressions: list[str]) -> dict[str,
             f"{MAX_PLOT_POINTS} stated points, and {len(points)} were read"
         )
     return {"kind": "points", "points": points}
+
+
+LINEAR_GRAPH_REQUEST = re.compile(
+    r"\bgraph\b[^.?!]*\bequation\b[^.?!]*\b(?:x|y)[-\s]?intercepts?\b",
+    re.IGNORECASE,
+)
+
+
+def _fraction(value: str | float) -> Fraction:
+    return Fraction(str(value))
+
+
+def _written(value: Fraction) -> str:
+    return (
+        str(value.numerator)
+        if value.denominator == 1
+        else f"{value.numerator}/{value.denominator}"
+    )
+
+
+def _point(coordinate: Coordinate, role: str) -> dict[str, str]:
+    return {"x": coordinate.x, "y": coordinate.y, "role": role}
+
+
+def _simple_lattice(limit: int) -> list[int]:
+    values = [0]
+    for value in range(1, limit + 1):
+        values.extend((value, -value))
+    return values
+
+
+def _substitute_point(
+    line: AffineLine,
+    context: GraphContext,
+    used: set[tuple[Fraction, Fraction]],
+) -> dict[str, str]:
+    """Choose the simplest distinct exact lattice point on a line."""
+    xmin, xmax, ymin, ymax = map(_fraction, context.bounds)
+    sx, sy = map(_fraction, context.snap)
+    a, b, c = map(Fraction, (line.a, line.b, line.c))
+    limit = 400
+
+    def acceptable(x: Fraction, y: Fraction) -> bool:
+        return (
+            xmin <= x <= xmax
+            and ymin <= y <= ymax
+            and x / sx == int(x / sx)
+            and y / sy == int(y / sy)
+            and a * x + b * y + c == 0
+            and (x, y) not in used
+        )
+
+    # Horizontal lines naturally use x=1 before x=-1; vertical lines use y=1.
+    # The same ordering extends to every slope and is deterministic.
+    if b:
+        for step in _simple_lattice(limit):
+            x = sx * step
+            y = -(a * x + c) / b
+            if acceptable(x, y):
+                return {"x": _written(x), "y": _written(y), "role": "substitute"}
+    if a:
+        for step in _simple_lattice(limit):
+            y = sy * step
+            x = -(b * y + c) / a
+            if acceptable(x, y):
+                return {"x": _written(x), "y": _written(y), "role": "substitute"}
+    raise PlanRefused("the graph offers no second exact lattice point on the line")
+
+
+def build_linear_graph_plan(
+    instruction: str, expressions: list[str], context: GraphContext
+) -> dict[str, Any]:
+    """Derive two exact defining points for an intercept-directed line graph."""
+    if LINEAR_GRAPH_REQUEST.search(instruction or "") is None:
+        raise PlanRefused("this is not an intercept-directed linear graph request")
+    if (
+        context.family != LINE_GRAPH_FAMILY
+        or context.orientation != LINE_GRAPH_ORIENTATION
+        or context.controls != LINE_GRAPH_CONTROLS
+    ):
+        raise PlanRefused("a linear graph needs a Cartesian two-point surface")
+    try:
+        line = affine_line(expressions)
+    except ValueError as error:
+        raise PlanRefused(str(error)) from error
+
+    xmin, xmax, ymin, ymax = map(_fraction, context.bounds)
+    sx, sy = map(_fraction, context.snap)
+
+    def on_grid(coordinate: Coordinate) -> bool:
+        x, y = Fraction(coordinate.x), Fraction(coordinate.y)
+        return (
+            xmin <= x <= xmax
+            and ymin <= y <= ymax
+            and x / sx == int(x / sx)
+            and y / sy == int(y / sy)
+        )
+
+    points: list[dict[str, str]] = []
+    used: set[tuple[Fraction, Fraction]] = set()
+    for role, coordinate in (
+        ("x-intercept", line.intercepts.x),
+        ("y-intercept", line.intercepts.y),
+    ):
+        if coordinate is None:
+            continue
+        exact = (Fraction(coordinate.x), Fraction(coordinate.y))
+        if exact in used:
+            continue
+        if not on_grid(coordinate):
+            raise PlanRefused(f"the {role} is not representable on the graph grid")
+        points.append(_point(coordinate, role))
+        used.add(exact)
+    while len(points) < 2:
+        substitute = _substitute_point(line, context, used)
+        exact = (Fraction(substitute["x"]), Fraction(substitute["y"]))
+        points.append(substitute)
+        used.add(exact)
+    return {
+        "kind": "line",
+        "coefficients": {"x": line.a, "y": line.b, "constant": line.c},
+        "points": points,
+    }

@@ -55,6 +55,58 @@ class AxisIntercepts:
         return f"x-intercept: {x}; y-intercept: {y}"
 
 
+@dataclass(frozen=True, slots=True)
+class AffineLine:
+    """One rational line in canonical standard form ``ax + by + c = 0``."""
+
+    a: str
+    b: str
+    c: str
+    intercepts: AxisIntercepts
+
+
+def affine_line(expressions: list[str]) -> AffineLine:
+    """Parse and prove one rational affine equation, independent of wording."""
+    relations = [item for item in expressions if "=" in item]
+    if len(relations) != 1 or len([item for item in expressions if item.strip()]) != 1:
+        raise ValueError("a line requires one stated equation")
+
+    x, y = sympy.symbols("x y", real=True)
+    try:
+        residual = sympy.expand(_relation(relations, {"x", "y"}))
+        polynomial = sympy.Poly(residual, x, y)
+    except (TableRefused, sympy.PolynomialError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"a line requires a rational affine equation: {error}"
+        ) from error
+    if polynomial.total_degree() > 1 or not all(
+        coefficient.is_rational for coefficient in polynomial.coeffs()
+    ):
+        raise ValueError("a line requires a rational affine equation")
+    if residual == 0 or not residual.free_symbols:
+        raise ValueError("the stated equation does not determine a line")
+
+    coefficients = [
+        sympy.Rational(polynomial.coeff_monomial(term))
+        for term in (x, y, sympy.Integer(1))
+    ]
+    denominator = sympy.ilcm(*(value.q for value in coefficients))
+    integers = [int(value * denominator) for value in coefficients]
+    divisor = abs(sympy.igcd(*integers)) or 1
+    integers = [value // divisor for value in integers]
+    first = next(value for value in integers if value)
+    if first < 0:
+        integers = [-value for value in integers]
+
+    x_value = _one_intercept(residual, variable=x, other=y)
+    y_value = _one_intercept(residual, variable=y, other=x)
+    intercepts = AxisIntercepts(
+        x=None if x_value is None else Coordinate(str(x_value), "0"),
+        y=None if y_value is None else Coordinate("0", str(y_value)),
+    )
+    return AffineLine(*(str(value) for value in integers), intercepts)
+
+
 def _one_intercept(
     residual: sympy.Expr,
     *,
@@ -90,30 +142,8 @@ def solve_axis_intercepts(
     """Compute both axis intercepts of one rational affine equation."""
     if INTERCEPT_REQUEST.search(instruction or "") is None:
         return None, ""
-    relations = [item for item in expressions if "=" in item]
-    if len(relations) != 1 or len([item for item in expressions if item.strip()]) != 1:
-        return None, "axis intercepts require one stated equation"
-
-    x, y = sympy.symbols("x y", real=True)
     try:
-        residual = sympy.expand(_relation(relations, {"x", "y"}))
-        polynomial = sympy.Poly(residual, x, y)
-    except (TableRefused, sympy.PolynomialError, TypeError, ValueError) as error:
-        return None, f"axis intercepts require a rational affine equation: {error}"
-    if polynomial.total_degree() > 1 or not all(
-        coefficient.is_rational for coefficient in polynomial.coeffs()
-    ):
-        return None, "axis intercepts require a rational affine equation"
-    if residual == 0 or not residual.free_symbols:
-        return None, "the stated equation does not determine a line"
-
-    try:
-        x_value = _one_intercept(residual, variable=x, other=y)
-        y_value = _one_intercept(residual, variable=y, other=x)
+        line = affine_line(expressions)
     except ValueError as error:
         return None, str(error)
-    result = AxisIntercepts(
-        x=None if x_value is None else Coordinate(str(x_value), "0"),
-        y=None if y_value is None else Coordinate("0", str(y_value)),
-    )
-    return result, ""
+    return line.intercepts, ""
