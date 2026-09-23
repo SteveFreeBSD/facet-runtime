@@ -1,6 +1,11 @@
 """Deterministic exact mathematics, the route Facet takes before reasoning."""
 
 from facet_runtime.exact.answer import extract_final_math
+from facet_runtime.exact.intercepts import (
+    AxisIntercepts,
+    Coordinate,
+    solve_axis_intercepts,
+)
 from facet_runtime.exact.linear import solve_linear_function, subject
 from facet_runtime.exact.regression import (
     NotThisQuestion,
@@ -11,6 +16,7 @@ from facet_runtime.exact.regression import (
 from facet_runtime.exact.result import ExactCallResult, ExactDebugInfo
 from facet_runtime.exact.router import (
     ANSWER_FORMS,
+    AXIS_INTERCEPTS,
     CHOICE,
     EXACT_METHOD,
     NO_OPERATION_MATCHED,
@@ -49,6 +55,7 @@ from facet_runtime.exact.table import (
 
 __all__ = [
     "ANSWER_FORMS",
+    "AXIS_INTERCEPTS",
     "CHOICE",
     "EXACT_METHOD",
     "NO_OPERATION_MATCHED",
@@ -59,6 +66,8 @@ __all__ = [
     "SCALAR",
     "TABLE_METHOD",
     "AnswerTable",
+    "AxisIntercepts",
+    "Coordinate",
     "EntryMode",
     "ExactCallResult",
     "ExactDebugInfo",
@@ -80,6 +89,7 @@ __all__ = [
     "parse_representation",
     "rate_unit",
     "regression_optimum",
+    "solve_axis_intercepts",
     "solve_exact",
     "solve_linear_function",
     "solve_one_equation",

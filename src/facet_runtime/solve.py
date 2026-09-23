@@ -522,6 +522,7 @@ def _answer(
     entry_mode: EntryMode,
     form: str = SCALAR,
     relation: Relation | None = None,
+    intercepts=None,
 ) -> dict[str, Any]:
     """One answer to write down, tagged with the kind it is.
 
@@ -551,6 +552,18 @@ def _answer(
             if relation is None
             else {"subject": relation.subject, "value": relation.value}
         ),
+        "intercepts": (
+            None
+            if intercepts is None
+            else {
+                "x": None
+                if intercepts.x is None
+                else {"x": intercepts.x.x, "y": intercepts.x.y},
+                "y": None
+                if intercepts.y is None
+                else {"x": intercepts.y.x, "y": intercepts.y.y},
+            }
+        ),
     }
 
 
@@ -574,6 +587,7 @@ def _exact_result(solution: ExactSolution, elapsed_ms: float) -> dict[str, Any]:
             solution.entry_mode,
             solution.form,
             solution.relation,
+            solution.intercepts,
         ),
         "provenance": {
             # The identity Facet answers to when it computed the answer itself.

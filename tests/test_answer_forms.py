@@ -31,6 +31,7 @@ from test_solve_math import Reasoner
 
 from facet_runtime.exact import (
     ANSWER_FORMS,
+    AXIS_INTERCEPTS,
     CHOICE,
     ORDERED_PAIR,
     PARTS,
@@ -60,6 +61,13 @@ REALNESS_INSTRUCTION = (
 #: here is a solver whose answers nothing downstream has agreed to consume.
 FAMILIES = [
     # (name, instruction, expressions, extras, expected form)
+    (
+        "axis intercepts",
+        "Find the x- and y-intercepts, if possible.",
+        ["4y=8"],
+        {"answer_parts": 2},
+        AXIS_INTERCEPTS,
+    ),
     (
         "scalar symbolic",
         "Simplify. Express your answer using rational exponents.",
@@ -304,7 +312,14 @@ def test_two_absolute_value_roots_cross_the_wire_as_parts():
 
 def test_the_form_set_is_closed():
     """Growing it is a protocol change, and one the consumer has to be told."""
-    assert ANSWER_FORMS == (SCALAR, ORDERED_PAIR, PARTS, CHOICE, RELATION)
+    assert ANSWER_FORMS == (
+        SCALAR,
+        ORDERED_PAIR,
+        PARTS,
+        CHOICE,
+        RELATION,
+        AXIS_INTERCEPTS,
+    )
 
 
 def test_an_equation_carries_both_its_sides_and_nothing_else_does():

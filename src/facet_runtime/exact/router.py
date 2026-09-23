@@ -48,6 +48,12 @@ from facet_runtime.exact.inequality import (
     solve_linear_inequality,
     states_an_inequality,
 )
+from facet_runtime.exact.intercepts import (
+    INTERCEPT_METHOD,
+    INTERCEPT_REQUEST,
+    AxisIntercepts,
+    solve_axis_intercepts,
+)
 from facet_runtime.exact.linear import (
     LINEAR_REQUEST,
     render,
@@ -197,7 +203,15 @@ CHOICE = "choice"
 #: from a value, which is why this was for a long time answered with the value
 #: and no way for anyone to tell.
 RELATION = "relation"
-ANSWER_FORMS: tuple[str, ...] = (SCALAR, ORDERED_PAIR, PARTS, CHOICE, RELATION)
+AXIS_INTERCEPTS = "axis-intercepts"
+ANSWER_FORMS: tuple[str, ...] = (
+    SCALAR,
+    ORDERED_PAIR,
+    PARTS,
+    CHOICE,
+    RELATION,
+    AXIS_INTERCEPTS,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +258,9 @@ class ExactSolution:
     #: whose answer surface states the subject itself can enter the value
     #: alone without splitting the written form to find it.
     relation: Relation | None = None
+    #: Both named axis intercepts.  ``None`` for one axis means the line has no
+    #: point on that axis; it is not a phrase or a scalar value.
+    intercepts: AxisIntercepts | None = None
     #: Which family this answer belongs to. `scalar` is the default because it
     #: is what most exact answers are: one written value.
     form: str = SCALAR
@@ -372,6 +389,29 @@ def solve_exact(
 
     if not expressions:
         return None, "no exact expression was supplied"
+
+    # Both axis intercepts are one structured answer: a named point or an
+    # explicit absence for each axis.  Claimed before the one-variable equation
+    # solver, which otherwise sees ``4y=8`` and answers only ``2`` while losing
+    # the x-axis question entirely.
+    if INTERCEPT_REQUEST.search(instruction):
+        intercepts, refusal = solve_axis_intercepts(instruction, expressions)
+        if intercepts is None:
+            raise ExactlyRefused(refusal)
+        return (
+            ExactSolution(
+                display=intercepts.display,
+                entry_mode="math",
+                form=AXIS_INTERCEPTS,
+                method=INTERCEPT_METHOD,
+                intercepts=intercepts,
+                evidence={
+                    "x_intercept": intercepts.x.written if intercepts.x else "absent",
+                    "y_intercept": intercepts.y.written if intercepts.y else "absent",
+                },
+            ),
+            "",
+        )
 
     # Which quadrant a point is in is two sign comparisons, and it is claimed
     # before every solver below because nothing below it can answer a choice
