@@ -60,6 +60,11 @@ from facet_runtime.exact.linear import (
     solve_linear_function,
     subject,
 )
+from facet_runtime.exact.linearity import (
+    LINEARITY_METHOD,
+    LINEARITY_REQUEST,
+    classify_equation_linearity,
+)
 from facet_runtime.exact.midpoint import (
     MIDPOINT_METHOD,
     MIDPOINT_REQUEST,
@@ -389,6 +394,34 @@ def solve_exact(
 
     if not expressions:
         return None, "no exact expression was supplied"
+
+    # Whether an equation is linear is a property of the relation after both
+    # sides are reduced, not of the tokens visible before cancellation.  This
+    # is a choice answer, so the exact result uses the page's published label
+    # and never implies that Facet or its consumer should click that choice.
+    if LINEARITY_REQUEST.search(instruction):
+        try:
+            classification = classify_equation_linearity(
+                instruction, expressions, choices or []
+            )
+        except ValueError as error:
+            raise ExactlyRefused(str(error)) from error
+        if classification is None:  # pragma: no cover - guarded by the regex above
+            raise ExactlyRefused("the linearity request could not be classified")
+        return (
+            ExactSolution(
+                display=classification.choice,
+                entry=classification.choice,
+                entry_mode="verbatim",
+                form=CHOICE,
+                method=LINEARITY_METHOD,
+                evidence={
+                    "simplified_relation": classification.simplified_relation,
+                    "total_degree": str(classification.total_degree),
+                },
+            ),
+            "",
+        )
 
     # Both axis intercepts are one structured answer: a named point or an
     # explicit absence for each axis.  Claimed before the one-variable equation
