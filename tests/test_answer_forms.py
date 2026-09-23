@@ -33,6 +33,7 @@ from facet_runtime.exact import (
     ANSWER_FORMS,
     AXIS_INTERCEPTS,
     CHOICE,
+    CONDITIONAL_CHOICE,
     ORDERED_PAIR,
     PARTS,
     RELATION,
@@ -317,6 +318,7 @@ def test_the_form_set_is_closed():
         ORDERED_PAIR,
         PARTS,
         CHOICE,
+        CONDITIONAL_CHOICE,
         RELATION,
         AXIS_INTERCEPTS,
     )

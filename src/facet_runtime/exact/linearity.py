@@ -29,6 +29,10 @@ LINEARITY_REQUEST = re.compile(
     r"\b(?:equation|relation)\b[^.?!]*?\blinear\b",
     re.IGNORECASE,
 )
+STANDARD_FORM_REQUEST = re.compile(
+    r"\b(?:convert|express|put|write)\b[^.?!]*?\bstandard\s+form\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,10 +40,14 @@ class LinearityClassification:
     choice: str
     simplified_relation: str
     total_degree: int
+    standard_form: tuple[str, str] | None = None
 
 
 def _choice_for(linear: bool, choices: list[str]) -> str:
     """Return the page's own unique label for this classification."""
+
+    if not choices:
+        return "Linear" if linear else "Not Linear"
 
     def normalized(choice: str) -> str:
         return re.sub(r"[\s_-]+", " ", choice.strip().casefold())
@@ -112,4 +120,41 @@ def classify_equation_linearity(
         choice=choice,
         simplified_relation=str(sympy.factor(residual)),
         total_degree=degree,
+        standard_form=(
+            _standard_form(polynomial, symbols)
+            if degree == 1 and STANDARD_FORM_REQUEST.search(instruction)
+            else None
+        ),
     )
+
+
+def _standard_form(
+    polynomial: sympy.Poly, symbols: set[sympy.Symbol]
+) -> tuple[str, str]:
+    """Canonical integer standard form, as its left and right sides."""
+    ordered = sorted(symbols, key=lambda item: item.name)
+    coefficients = [
+        sympy.Rational(polynomial.coeff_monomial(symbol)) for symbol in ordered
+    ]
+    constant = sympy.Rational(polynomial.coeff_monomial(1))
+    denominator = sympy.ilcm(*(value.q for value in [*coefficients, constant]))
+    integers = [int(value * denominator) for value in [*coefficients, constant]]
+    divisor = abs(sympy.igcd(*integers)) or 1
+    integers = [value // divisor for value in integers]
+    first = next(value for value in integers[:-1] if value)
+    if first < 0:
+        integers = [-value for value in integers]
+
+    terms: list[str] = []
+    for symbol, coefficient in zip(ordered, integers[:-1], strict=True):
+        if coefficient == 0:
+            continue
+        magnitude = abs(coefficient)
+        term = f"{'' if magnitude == 1 else magnitude}{symbol.name}"
+        if not terms:
+            terms.append(f"{'-' if coefficient < 0 else ''}{term}")
+        else:
+            terms.append(f"{'-' if coefficient < 0 else '+'}{term}")
+    if not terms:
+        raise ValueError("the simplified relation has no linear term")
+    return "".join(terms), str(-integers[-1])

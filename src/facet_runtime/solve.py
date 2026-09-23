@@ -533,6 +533,7 @@ def _answer(
     form: str = SCALAR,
     relation: Relation | None = None,
     intercepts=None,
+    choice: str = "",
 ) -> dict[str, Any]:
     """One answer to write down, tagged with the kind it is.
 
@@ -550,7 +551,7 @@ def _answer(
     to be recovered by splitting `entry` -- the same rule `parts` follows, and
     for the same reason.
     """
-    return {
+    answer = {
         "kind": VALUE,
         "display": display,
         "entry": entry,
@@ -575,6 +576,9 @@ def _answer(
             }
         ),
     }
+    if choice:
+        answer["choice"] = choice
+    return answer
 
 
 def _plan_answer(kind: str, plan: dict[str, Any]) -> dict[str, Any]:
@@ -598,6 +602,7 @@ def _exact_result(solution: ExactSolution, elapsed_ms: float) -> dict[str, Any]:
             solution.form,
             solution.relation,
             solution.intercepts,
+            solution.choice,
         ),
         "provenance": {
             # The identity Facet answers to when it computed the answer itself.
@@ -964,7 +969,7 @@ def solve_math(problem: MathProblem, *, reason) -> dict[str, Any]:
         # An exact answer to a choice question is one of its choices by
         # construction, and is checked anyway: this is the one claim about such
         # an answer a consumer can verify, so it is verified before it leaves.
-        _held_to_the_choices(problem, solution.display)
+        _held_to_the_choices(problem, solution.choice or solution.display)
         return _exact_result(solution, round((time.perf_counter() - started) * 1000, 3))
 
     run = reason(reasoning_prompt(problem))

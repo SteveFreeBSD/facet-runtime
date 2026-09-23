@@ -200,6 +200,7 @@ SCALAR = "scalar"
 ORDERED_PAIR = "ordered-pair"
 PARTS = "parts"
 CHOICE = "choice"
+CONDITIONAL_CHOICE = "conditional-choice"
 #: An answer that is an *equation* rather than a value: `y = -2x + 5`, which is
 #: what "the equation of the line in slope-intercept form" asks for. It is its
 #: own family because a consumer has two ways to enter it and has to choose:
@@ -214,6 +215,7 @@ ANSWER_FORMS: tuple[str, ...] = (
     ORDERED_PAIR,
     PARTS,
     CHOICE,
+    CONDITIONAL_CHOICE,
     RELATION,
     AXIS_INTERCEPTS,
 )
@@ -263,6 +265,9 @@ class ExactSolution:
     #: whose answer surface states the subject itself can enter the value
     #: alone without splitting the written form to find it.
     relation: Relation | None = None
+    #: The published alternative that enables `relation`, when answering is a
+    #: choice followed conditionally by an equation entry.
+    choice: str = ""
     #: Both named axis intercepts.  ``None`` for one axis means the line has no
     #: point on that axis; it is not a phrase or a scalar value.
     intercepts: AxisIntercepts | None = None
@@ -408,12 +413,27 @@ def solve_exact(
             raise ExactlyRefused(str(error)) from error
         if classification is None:  # pragma: no cover - guarded by the regex above
             raise ExactlyRefused("the linearity request could not be classified")
+        relation = (
+            None
+            if classification.standard_form is None
+            else Relation(*classification.standard_form)
+        )
         return (
             ExactSolution(
-                display=classification.choice,
-                entry=classification.choice,
-                entry_mode="verbatim",
-                form=CHOICE,
+                display=(
+                    classification.choice
+                    if relation is None
+                    else (
+                        f"{classification.choice}; "
+                        f"{relation.subject.replace('+', ' + ').replace('-', ' - ').strip()}"
+                        f" = {relation.value}"
+                    )
+                ),
+                entry=classification.choice if relation is None else relation.written,
+                entry_mode="verbatim" if relation is None else "math",
+                form=CHOICE if relation is None else CONDITIONAL_CHOICE,
+                relation=relation,
+                choice=classification.choice if relation is not None else "",
                 method=LINEARITY_METHOD,
                 evidence={
                     "simplified_relation": classification.simplified_relation,
