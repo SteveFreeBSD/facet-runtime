@@ -69,8 +69,8 @@ INEQUALITY_GRAPH_CHOICE_REQUEST = re.compile(
 )
 
 _GRAPH_CHOICE = re.compile(
-    r"Graph:\s*x=(?P<left>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s+"
-    r"(?P<left_style>solid|dashed);\s*x="
+    r"Graph:\s*(?P<axis>[xy])=(?P<left>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s+"
+    r"(?P<left_style>solid|dashed);\s*(?P<right_axis>[xy])="
     r"(?P<right>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s+"
     r"(?P<right_style>solid|dashed);\s*shade=(?P<shade>between|outside)"
 )
@@ -187,11 +187,13 @@ def choose_linear_inequality_graph(
     """
     if not INEQUALITY_GRAPH_CHOICE_REQUEST.search(instruction):
         return None, {}, "the instruction does not ask to choose an inequality graph"
-    parsed: list[tuple[str, float, str, float, str, str]] = []
+    parsed: list[tuple[str, str, float, str, float, str, str]] = []
     for choice in choices:
         match = _GRAPH_CHOICE.fullmatch(choice.strip())
         if match is None:
             return None, {}, "a graph alternative has no exact semantic description"
+        if match.group("axis") != match.group("right_axis"):
+            return None, {}, "a graph alternative mixes coordinate axes"
         left = float(match.group("left"))
         right = float(match.group("right"))
         if not left < right:
@@ -199,6 +201,7 @@ def choose_linear_inequality_graph(
         parsed.append(
             (
                 choice,
+                match.group("axis"),
                 left,
                 match.group("left_style"),
                 right,
@@ -223,6 +226,9 @@ def choose_linear_inequality_graph(
         return None, {}, refusal
 
     solution = solved.solution
+    variable = solved.evidence.get("variable", "")
+    if variable not in {"x", "y"}:
+        return None, {}, "the exact solution does not use a Cartesian graph axis"
     if isinstance(solution, sympy.Interval) and all(
         endpoint not in {-sympy.oo, sympy.oo}
         for endpoint in (solution.start, solution.end)
@@ -259,8 +265,9 @@ def choose_linear_inequality_graph(
     near = lambda left, right: abs(left - right) < 1e-8
     matches = [
         choice
-        for choice, left, left_style, right, right_style, shade in parsed
-        if near(left, expected[0])
+        for choice, axis, left, left_style, right, right_style, shade in parsed
+        if axis == variable
+        and near(left, expected[0])
         and left_style == expected[1]
         and near(right, expected[2])
         and right_style == expected[3]
@@ -276,6 +283,7 @@ def choose_linear_inequality_graph(
         matches[0],
         {
             **solved.evidence,
+            "axis": variable,
             "left_boundary": str(sympy.nsimplify(expected[0])),
             "right_boundary": str(sympy.nsimplify(expected[2])),
             "left_style": expected[1],

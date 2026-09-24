@@ -49,6 +49,30 @@ def test_live_strict_absolute_value_graph_is_chosen_semantically():
     )
 
 
+def test_horizontal_absolute_value_graph_is_chosen_from_y_semantics():
+    choices = (
+        "Graph: y=-8 dashed; y=-2 dashed; shade=outside",
+        "Graph: y=-7 dashed; y=-3 dashed; shade=between",
+        "Graph: y=-8 dashed; y=-2 dashed; shade=between",
+        "Graph: y=-7 dashed; y=-3 dashed; shade=outside",
+    )
+
+    result = solve_math(
+        MathProblem(
+            instruction=ASK,
+            expressions=("|3y+15|<9",),
+            answer_choices=choices,
+        ),
+        reason=no_model,
+    )
+
+    assert result["route"] == "exact"
+    assert result["answer"]["form"] == CHOICE
+    assert result["answer"]["entry"] == choices[2]
+    assert result["provenance"]["evidence"]["model_calls"] == 0
+    assert result["provenance"]["evidence"]["computation"]["axis"] == "y"
+
+
 @pytest.mark.parametrize(
     ("expression", "expected"),
     [
