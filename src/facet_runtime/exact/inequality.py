@@ -514,6 +514,43 @@ def _linear(expression: sympy.Expr, variable: sympy.Symbol, what: str):
 _MIRRORED = {">": "<", ">=": "<="}
 
 
+def _written_absolute_inner(expressions: list[str]) -> tuple[str, sympy.Expr]:
+    """The expression between the one written pair of absolute-value bars.
+
+    SymPy quite correctly canonicalizes ``Abs(-9*y + 10)`` to
+    ``Abs(9*y - 10)``.  That is the same function, but it is not the same
+    rewrite of the expression the question displayed.  A rewrite-only answer
+    therefore keeps this small piece of source syntax while still parsing it
+    for the safety and affine-family checks below.
+    """
+    found: list[str] = []
+    for expression in expressions:
+        text = _normalized(expression)
+        if not _OPERATOR.search(text):
+            continue
+        bars = [index for index, character in enumerate(text) if character == "|"]
+        if not bars:
+            continue
+        if len(bars) != 2:
+            raise InequalityDeclined("the absolute-value bars are not one pair")
+        inside = text[bars[0] + 1 : bars[1]].strip()
+        if not inside:
+            raise InequalityDeclined("the absolute value is empty")
+        found.append(inside)
+    if len(found) != 1:
+        raise InequalityDeclined(
+            "rewriting requires one structurally preserved absolute value"
+        )
+    written = found[0]
+    try:
+        parsed = _safe_sympy_expression(written)
+    except (SyntaxError, TypeError, ValueError, ZeroDivisionError) as error:
+        raise InequalityDeclined(
+            f"the expression inside the absolute value could not be read: {error}"
+        ) from error
+    return written, parsed
+
+
 def rewrite_absolute_value_inequality(
     instruction: str, expressions: list[str]
 ) -> tuple[InequalityPair | None, str]:
@@ -533,7 +570,11 @@ def rewrite_absolute_value_inequality(
         if len(absolutes) != 1:
             raise InequalityDeclined("rewriting requires exactly one absolute value")
         (absolute,) = absolutes
-        inner = sympy.expand(absolute.args[0])
+        inside, inner = _written_absolute_inner(expressions)
+        if sympy.Abs(inner) != absolute:
+            raise InequalityDeclined(
+                "the written absolute value does not match the parsed inequality"
+            )
         if variable not in inner.free_symbols:
             raise InequalityDeclined("the absolute value has no variable in it")
         _linear(inner, variable, "the expression inside the absolute value")
@@ -556,12 +597,11 @@ def rewrite_absolute_value_inequality(
                 "the isolated absolute-value bound is not positive"
             )
 
-        inside = sympy.sstr(inner)
         limit = sympy.sstr(bound)
         negative = sympy.sstr(-bound)
         if relation in ("<", "<="):
             pair = InequalityPair(
-                left=WrittenComparison(negative, relation, inside),
+                left=WrittenComparison(inside, _REVERSED[relation], negative),
                 connector="and",
                 right=WrittenComparison(inside, relation, limit),
             )
