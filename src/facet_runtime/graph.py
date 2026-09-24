@@ -512,8 +512,18 @@ def build_linear_inequality_graph_plan(
         raise PlanRefused("a linear inequality needs its Cartesian composite surface")
     written = [item.strip() for item in expressions if item.strip()]
     inequalities = [item for item in written if _INEQUALITY.search(item)]
-    if len(inequalities) != 1:
+    if not inequalities:
         raise PlanRefused("a linear inequality graph requires one stated inequality")
+    if len(inequalities) > 1:
+        plans = [
+            build_linear_inequality_graph_plan(instruction, [item], context)
+            for item in inequalities
+        ]
+        if any(plan != plans[0] for plan in plans[1:]):
+            raise PlanRefused(
+                "a linear inequality graph requires one stated inequality"
+            )
+        return plans[0]
     expression = inequalities[0]
     match = _INEQUALITY.search(expression)
     if match is None or _INEQUALITY.search(expression, match.end()) is not None:

@@ -58,6 +58,17 @@ def test_answer_generated_boundary_equality_does_not_steal_partial_graph_resume(
     assert reason.calls == []
 
 
+def test_duplicate_equivalent_question_math_is_one_inequality():
+    reason = Reasoner()
+
+    result = solve_math(problem(["2x+6y<6", "x+3y<3"]), reason=reason)
+
+    assert result["route"] == "exact"
+    assert result["answer"]["plan"]["relation"] == "<"
+    assert result["provenance"]["evidence"]["model_calls"] == 0
+    assert reason.calls == []
+
+
 def test_two_stated_inequalities_are_refused():
     with pytest.raises(SolveRefused):
         solve_math(problem(["x<2", "y>3"]), reason=Reasoner())
