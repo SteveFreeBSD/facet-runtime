@@ -555,6 +555,23 @@ tests/                   Lightweight foundation tests
 tooling/fastflowlm/      Optional, isolated upstream runtime builds
 ```
 
+## Linear-equation coordinate steps
+
+The exact affine-coordinate route substitutes an explicitly supplied `x` or
+`y`, returning the other coordinate as a typed scalar with zero model calls.
+This is separate from equation rewriting, labeled-point reading and slope
+from two points.
+
+A `value` request may carry `coordinate_task` with `axis` (`x` or `y`), `given`
+(the other coordinate as an exact string, or null for a free choice), `bounds`
+(`[xmin,xmax,ymin,ymax]` exact strings), `steps` (two positive exact strings),
+and `allow_rational` (boolean). A free choice requires these constraints.
+Facet searches for a complete point on that lattice and inside the bounds,
+preferring small integer coordinates. Rational points require explicit
+permission. No visible representable point, ambiguity, or a nonlinear relation
+is a terminal exact refusal, never a model fallback. The result's computation
+evidence carries the complete point and domain used.
+
 ## Scope boundary
 
 Facet owns solver routing, exact deterministic mathematics, the reasoning

@@ -74,6 +74,17 @@ from facet_runtime.exact.linear import (
     solve_linear_function,
     subject,
 )
+from facet_runtime.exact.linear_coordinate import (
+    METHOD as LINEAR_COORDINATE_METHOD,
+)
+from facet_runtime.exact.linear_coordinate import (
+    REQUEST as LINEAR_COORDINATE_REQUEST,
+)
+from facet_runtime.exact.linear_coordinate import (
+    CoordinateTask,
+    named_task,
+    solve_coordinate,
+)
 from facet_runtime.exact.linearity import (
     LINEARITY_METHOD,
     LINEARITY_REQUEST,
@@ -353,6 +364,7 @@ def solve_exact(
     table: AnswerTable | None = None,
     representation: Representation | None = None,
     choices: list[str] | None = None,
+    coordinate_task: CoordinateTask | None = None,
 ) -> tuple[ExactSolution | None, str]:
     """Answer the question exactly, or decline it and say why.
 
@@ -368,6 +380,46 @@ def solve_exact(
     written form for. Where they are given they are the contract, and a solver
     that claims such a question must return one of them exactly.
     """
+    if coordinate_task is not None or (
+        LINEAR_COORDINATE_REQUEST.search(instruction)
+        and re.search(
+            r"\b(?:given|when|if|choose|select)\b", instruction, re.IGNORECASE
+        )
+    ):
+        try:
+            named = (
+                named_task(instruction)
+                if coordinate_task is None
+                else (coordinate_task.axis, coordinate_task.given)
+            )
+            if named is None or answer_parts != 1 or points or table or choices:
+                raise ValueError(
+                    "coordinate request does not uniquely identify one scalar"
+                )
+            value, point = solve_coordinate(expressions, *named, coordinate_task)
+            if representation is not None and (
+                representation.kind == "signed-integer"
+                and "/" in value
+                or len(value) > representation.max_length
+            ):
+                raise ValueError(
+                    "coordinate cannot be represented by the answer contract"
+                )
+        except (ValueError, TypeError, ZeroDivisionError) as error:
+            raise ExactlyRefused(str(error)) from error
+        return ExactSolution(
+            display=value,
+            entry=value,
+            entry_mode="math",
+            method=LINEAR_COORDINATE_METHOD,
+            evidence={
+                "point": ",".join(point),
+                "axis": named[0],
+                "bounds": ",".join(map(str, coordinate_task.bounds))
+                if coordinate_task
+                else "",
+            },
+        ), ""
     if table is not None:
         return solve_table_completion(expressions, table, answer_parts, representation)
     if points:

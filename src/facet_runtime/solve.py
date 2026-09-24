@@ -51,6 +51,7 @@ from facet_runtime.exact import (
     solve_exact,
     verify_completion,
 )
+from facet_runtime.exact.linear_coordinate import CoordinateTask, parse_task
 from facet_runtime.graph import (
     LINEAR_GRAPH_PLAN,
     LINEAR_INEQUALITY_GRAPH_PLAN,
@@ -130,6 +131,7 @@ PROBLEM_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
             # and a list flattened into the instruction can be read by a model
             # and by nothing else.
             "answer_choices",
+            "coordinate_task",
         ),
     ),
     PARABOLA_PLAN: (("instruction", "expressions", "graph"), ("label",)),
@@ -238,6 +240,7 @@ class MathProblem:
     #: contract: an answer to a choice question that is not one of the choices
     #: is not an answer to it, whichever route produced it.
     answer_choices: tuple[str, ...] = ()
+    coordinate_task: CoordinateTask | None = None
 
 
 def _checked_kind(payload: dict[str, Any]) -> str:
@@ -362,6 +365,14 @@ def parse_problem(payload: Any) -> MathProblem:
             f"answer_table has {table.blanks} blanks and answer_parts is {parts}",
         )
     choices = parse_choices(payload.get("answer_choices", []))
+    try:
+        coordinate_task = (
+            parse_task(payload["coordinate_task"])
+            if "coordinate_task" in payload
+            else None
+        )
+    except (ValueError, TypeError, ZeroDivisionError) as error:
+        raise SolveRefused("invalid_request", str(error)) from error
     # A question answered by choosing has one answer: the choice. Several
     # alternatives are not several answers, and reading them as one is exactly
     # the fault this field exists to end -- a five-option radio group crossed
@@ -383,6 +394,7 @@ def parse_problem(payload: Any) -> MathProblem:
         answer_table=table,
         answer_representation=representation,
         answer_choices=choices,
+        coordinate_task=coordinate_task,
     )
 
 
@@ -925,6 +937,7 @@ def _solve_exactly(problem: MathProblem):
         table=problem.answer_table,
         representation=problem.answer_representation,
         choices=list(problem.answer_choices),
+        coordinate_task=problem.coordinate_task,
     )
 
 
