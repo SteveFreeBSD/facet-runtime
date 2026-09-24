@@ -55,6 +55,7 @@ from facet_runtime.graph import (
     LINEAR_GRAPH_PLAN,
     LINEAR_INEQUALITY_GRAPH_PLAN,
     LINEAR_INEQUALITY_SYSTEM_GRAPH_PLAN,
+    MIN_REGRESSION_POINTS,
     PARABOLA_PLAN,
     POINT_PLOT_PLAN,
     QUADRATIC_REGRESSION,
@@ -330,7 +331,10 @@ def parse_problem(payload: Any) -> MathProblem:
             else None
         )
         points = (
-            parse_points(payload["points"])
+            parse_points(
+                payload["points"],
+                minimum=MIN_REGRESSION_POINTS if kind == QUADRATIC_REGRESSION else 1,
+            )
             if kind == QUADRATIC_REGRESSION or "points" in payload
             else ()
         )

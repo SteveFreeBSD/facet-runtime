@@ -149,6 +149,13 @@ over exact rationals, puts every stated property back into the result, and
 declines rather than answering when one of them does not hold, when the
 properties disagree, or when they leave the line undetermined.
 
+The same exact route answers one normalized Cartesian point when the question
+asks for the coordinates of a labeled point. The consumer proves the label-to-
+point association and graph geometry before the point crosses; Facet returns
+an `ordered-pair` with its x and y components preserved separately. More than
+one candidate or any answer contract other than two components is a claimed
+refusal and never reaches a model.
+
 An inequality is answered the same way. `src/facet_runtime/exact/inequality.py`
 solves one-variable linear inequalities -- simple, chained like `a < bx + c <= d`,
 or joined by "and" -- over exact rationals, turning each comparison round when
@@ -192,7 +199,7 @@ because none took part.
 | `answer_table`  | `value` only | A question that is a grid: `columns`, and `rows` of `{"value"}` or `{"blank": n}` cells. |
 | `answer_representation` | `value` only | The form every separate answer must take: `{"kind": "signed-integer", "max_length": n}`. |
 | `graph`         | `parabola_plan` | Normalised geometry: `family`, `orientation`, `bounds`, `snap`, `controls`. |
-| `points`        | `quadratic_regression`; a `value` about data | 3 to 32 exact `{"x", "y"}` coordinates. |
+| `points`        | `quadratic_regression`; a `value` about data or one identified Cartesian point | 3 to 32 exact coordinates for regression; 1 exact `{"x", "y"}` coordinate for a labeled-point value. |
 | `label`         | no       | The question's own label, at most 200 characters. |
 
 A `value` question is about `expressions` or about `points` -- mathematics

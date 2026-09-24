@@ -59,6 +59,11 @@ from facet_runtime.exact.intercepts import (
     AxisIntercepts,
     solve_axis_intercepts,
 )
+from facet_runtime.exact.labeled_point import (
+    LABELED_POINT_METHOD,
+    LABELED_POINT_REQUEST,
+    solve_labeled_point,
+)
 from facet_runtime.exact.linear import (
     LINEAR_REQUEST,
     construct_parallel_line,
@@ -756,6 +761,28 @@ def solve_over_points(
     reason travels out to whoever asked, so a question that fell through says
     which gap it fell through.
     """
+    if LABELED_POINT_REQUEST.search(instruction):
+        point, refusal = solve_labeled_point(instruction, points, answer_parts)
+        if point is None:
+            # The page geometry is the only evidence that can identify this
+            # point.  A model cannot repair two candidates or a mismatched
+            # answer contract, so this is a claimed refusal, not a decline.
+            raise ExactlyRefused(refusal)
+        x, y = point
+        return (
+            ExactSolution(
+                display=f"({x},{y})",
+                # The value is one ordered pair, while its two components stay
+                # separate for a consumer whose page owns two coordinate boxes.
+                parts=(x, y),
+                entry_mode="math",
+                form=ORDERED_PAIR,
+                method=LABELED_POINT_METHOD,
+                evidence={"x": x, "y": y},
+            ),
+            "",
+        )
+
     try:
         values, working = regression_optimum(instruction, points, answer_parts)
     except NotThisQuestion as refusal:

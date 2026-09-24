@@ -193,14 +193,15 @@ def parse_graph_context(payload: Any) -> GraphContext:
     )
 
 
-def parse_points(payload: Any) -> tuple[Point, ...]:
-    """Read the measured coordinates a regression is fitted to, or refuse them."""
+def parse_points(
+    payload: Any, *, minimum: int = MIN_REGRESSION_POINTS
+) -> tuple[Point, ...]:
+    """Read exact normalised coordinates, with the caller's required count."""
     if not isinstance(payload, list):
         raise PlanRefused("points must be a list")
-    if not MIN_REGRESSION_POINTS <= len(payload) <= MAX_REGRESSION_POINTS:
+    if not minimum <= len(payload) <= MAX_REGRESSION_POINTS:
         raise PlanRefused(
-            f"a regression takes {MIN_REGRESSION_POINTS} to "
-            f"{MAX_REGRESSION_POINTS} points"
+            f"this question takes {minimum} to {MAX_REGRESSION_POINTS} points"
         )
     read = []
     for item in payload:
