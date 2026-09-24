@@ -156,6 +156,14 @@ an `ordered-pair` with its x and y components preserved separately. More than
 one candidate or any answer contract other than two components is a claimed
 refusal and never reaches a model.
 
+A request for the slope of a graph-defined line supplies exactly two points
+whose line ownership and labels the consumer has already proved. Facet computes
+`(y2-y1)/(x2-x1)` over exact rationals, reduces it, and returns one typed
+`scalar`. A vertical line returns `DNE` only when the instruction explicitly
+names that convention. A wrong point count, a non-scalar answer contract, or a
+vertical line without a stated notation is a claimed refusal and cannot fall
+through to a model.
+
 An inequality is answered the same way. `src/facet_runtime/exact/inequality.py`
 solves one-variable linear inequalities -- simple, chained like `a < bx + c <= d`,
 or joined by "and" -- over exact rationals, turning each comparison round when
@@ -199,7 +207,7 @@ because none took part.
 | `answer_table`  | `value` only | A question that is a grid: `columns`, and `rows` of `{"value"}` or `{"blank": n}` cells. |
 | `answer_representation` | `value` only | The form every separate answer must take: `{"kind": "signed-integer", "max_length": n}`. |
 | `graph`         | `parabola_plan` | Normalised geometry: `family`, `orientation`, `bounds`, `snap`, `controls`. |
-| `points`        | `quadratic_regression`; a `value` about data or one identified Cartesian point | 3 to 32 exact coordinates for regression; 1 exact `{"x", "y"}` coordinate for a labeled-point value. |
+| `points`        | `quadratic_regression`; a `value` about data, one identified Cartesian point, or a graph-defined line | 3 to 32 exact coordinates for regression; 1 exact `{"x", "y"}` coordinate for a labeled-point value; exactly 2 for slope from a line. |
 | `label`         | no       | The question's own label, at most 200 characters. |
 
 A `value` question is about `expressions` or about `points` -- mathematics

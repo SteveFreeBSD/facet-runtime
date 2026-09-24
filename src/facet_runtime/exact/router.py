@@ -84,6 +84,11 @@ from facet_runtime.exact.midpoint import (
     MIDPOINT_REQUEST,
     solve_midpoint,
 )
+from facet_runtime.exact.point_slope import (
+    POINT_SLOPE_METHOD,
+    POINT_SLOPE_REQUEST,
+    solve_point_slope,
+)
 from facet_runtime.exact.polynomial import answer_polynomial_product
 from facet_runtime.exact.quadrant import (
     QUADRANT_METHOD,
@@ -779,6 +784,23 @@ def solve_over_points(
                 form=ORDERED_PAIR,
                 method=LABELED_POINT_METHOD,
                 evidence={"x": x, "y": y},
+            ),
+            "",
+        )
+
+    if POINT_SLOPE_REQUEST.search(instruction):
+        slope, refusal = solve_point_slope(instruction, points, answer_parts)
+        if slope is None:
+            # Point identity and vertical-line notation are structural facts.
+            # A model cannot repair either without guessing what the page meant.
+            raise ExactlyRefused(refusal)
+        return (
+            ExactSolution(
+                display=slope,
+                entry=slope,
+                form=SCALAR,
+                method=POINT_SLOPE_METHOD,
+                evidence={"points": points, "slope": slope},
             ),
             "",
         )
