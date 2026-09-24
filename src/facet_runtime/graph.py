@@ -511,12 +511,14 @@ def build_linear_inequality_graph_plan(
     ):
         raise PlanRefused("a linear inequality needs its Cartesian composite surface")
     written = [item.strip() for item in expressions if item.strip()]
-    if len(written) != 1:
+    inequalities = [item for item in written if _INEQUALITY.search(item)]
+    if len(inequalities) != 1:
         raise PlanRefused("a linear inequality graph requires one stated inequality")
-    match = _INEQUALITY.search(written[0])
-    if match is None or _INEQUALITY.search(written[0], match.end()) is not None:
+    expression = inequalities[0]
+    match = _INEQUALITY.search(expression)
+    if match is None or _INEQUALITY.search(expression, match.end()) is not None:
         raise PlanRefused("the expression is not one inequality")
-    left_text, right_text = written[0][: match.start()], written[0][match.end() :]
+    left_text, right_text = expression[: match.start()], expression[match.end() :]
     if not left_text.strip() or not right_text.strip():
         raise PlanRefused("the inequality has a missing side")
     try:

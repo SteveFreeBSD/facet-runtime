@@ -15,12 +15,13 @@ GRAPH = {
 }
 
 
-def problem(expression: str):
+def problem(expression: str | list[str]):
+    expressions = [expression] if isinstance(expression, str) else expression
     return parse_problem(
         {
             "result_kind": LINEAR_INEQUALITY_GRAPH_PLAN,
             "instruction": "Graph the solution set of the following linear inequality:",
-            "expressions": [expression],
+            "expressions": expressions,
             "graph": GRAPH,
         }
     )
@@ -44,6 +45,22 @@ def test_live_strict_inequality_is_an_exact_dashed_plan_with_no_model():
     }
     assert result["provenance"]["evidence"]["model_calls"] == 0
     assert reason.calls == []
+
+
+def test_answer_generated_boundary_equality_does_not_steal_partial_graph_resume():
+    reason = Reasoner()
+
+    result = solve_math(problem(["2x+6y<6", "y=-x/3+1"]), reason=reason)
+
+    assert result["route"] == "exact"
+    assert result["answer"]["plan"]["relation"] == "<"
+    assert result["provenance"]["evidence"]["model_calls"] == 0
+    assert reason.calls == []
+
+
+def test_two_stated_inequalities_are_refused():
+    with pytest.raises(SolveRefused):
+        solve_math(problem(["x<2", "y>3"]), reason=Reasoner())
 
 
 @pytest.mark.parametrize(
