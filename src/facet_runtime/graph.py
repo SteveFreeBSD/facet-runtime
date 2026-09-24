@@ -38,13 +38,17 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Any
 
+import sympy
+
 from facet_runtime.exact.intercepts import AffineLine, Coordinate, affine_line
+from facet_runtime.exact.table import _safe_sympy_expression
 
 #: The result kinds a consumer may ask for beyond an ordinary value.
 PARABOLA_PLAN = "parabola_plan"
 QUADRATIC_REGRESSION = "quadratic_regression"
 POINT_PLOT_PLAN = "point_plot_plan"
 LINEAR_GRAPH_PLAN = "linear_graph_plan"
+LINEAR_INEQUALITY_GRAPH_PLAN = "linear_inequality_graph_plan"
 
 #: How many points a plotting question may ask for. Hawkes draws one draggable
 #: control per point, and a question asking for none or for dozens is not the
@@ -65,6 +69,8 @@ GRAPH_CONTROLS = "vertex-and-symmetric-points"
 LINE_GRAPH_FAMILY = "line"
 LINE_GRAPH_ORIENTATION = "cartesian"
 LINE_GRAPH_CONTROLS = "two-points"
+INEQUALITY_GRAPH_FAMILY = "linear-inequality"
+INEQUALITY_GRAPH_CONTROLS = "boundary-two-points-regions"
 
 MIN_REGRESSION_POINTS = 3
 MAX_REGRESSION_POINTS = 32
@@ -136,6 +142,7 @@ def parse_graph_context(payload: Any) -> GraphContext:
     supported = {
         (GRAPH_FAMILY, GRAPH_ORIENTATION, GRAPH_CONTROLS),
         (LINE_GRAPH_FAMILY, LINE_GRAPH_ORIENTATION, LINE_GRAPH_CONTROLS),
+        (INEQUALITY_GRAPH_FAMILY, LINE_GRAPH_ORIENTATION, INEQUALITY_GRAPH_CONTROLS),
     }
     identity = (fields["family"], fields["orientation"], fields["controls"])
     if identity not in supported:
@@ -483,4 +490,107 @@ def build_linear_graph_plan(
         "kind": "line",
         "coefficients": {"x": line.a, "y": line.b, "constant": line.c},
         "points": points,
+    }
+
+
+_INEQUALITY = re.compile(r"(?P<relation><=|>=|<|>|\\leq?|\\geq?)")
+
+
+def build_linear_inequality_graph_plan(
+    instruction: str, expressions: list[str], context: GraphContext
+) -> dict[str, Any]:
+    """Derive the exact boundary and half-plane relation for one inequality."""
+    if not re.search(
+        r"\bgraph\b[^.?!]*\b(?:linear\s+)?inequalit", instruction, re.IGNORECASE
+    ):
+        raise PlanRefused("this is not a request to graph a linear inequality")
+    if (
+        context.family != INEQUALITY_GRAPH_FAMILY
+        or context.orientation != LINE_GRAPH_ORIENTATION
+        or context.controls != INEQUALITY_GRAPH_CONTROLS
+    ):
+        raise PlanRefused("a linear inequality needs its Cartesian composite surface")
+    written = [item.strip() for item in expressions if item.strip()]
+    if len(written) != 1:
+        raise PlanRefused("a linear inequality graph requires one stated inequality")
+    match = _INEQUALITY.search(written[0])
+    if match is None or _INEQUALITY.search(written[0], match.end()) is not None:
+        raise PlanRefused("the expression is not one inequality")
+    left_text, right_text = written[0][: match.start()], written[0][match.end() :]
+    if not left_text.strip() or not right_text.strip():
+        raise PlanRefused("the inequality has a missing side")
+    try:
+        residual = sympy.expand(
+            _safe_sympy_expression(left_text) - _safe_sympy_expression(right_text)
+        )
+        x, y = sympy.symbols("x y", real=True)
+        polynomial = sympy.Poly(residual, x, y)
+    except (
+        SyntaxError,
+        TypeError,
+        ValueError,
+        ZeroDivisionError,
+        sympy.PolynomialError,
+    ) as error:
+        raise PlanRefused(
+            "the inequality could not be read as an exact line"
+        ) from error
+    if (
+        polynomial.total_degree() > 1
+        or not residual.free_symbols
+        or not residual.free_symbols <= {x, y}
+        or not all(value.is_rational for value in polynomial.coeffs())
+    ):
+        raise PlanRefused("the inequality boundary is not a rational affine line")
+    values = [
+        sympy.Rational(polynomial.coeff_monomial(term))
+        for term in (x, y, sympy.Integer(1))
+    ]
+    denominator = sympy.ilcm(*(value.q for value in values))
+    integers = [int(value * denominator) for value in values]
+    divisor = abs(sympy.igcd(*integers)) or 1
+    integers = [value // divisor for value in integers]
+    relation = {r"\le": "<=", r"\leq": "<=", r"\ge": ">=", r"\geq": ">="}.get(
+        match.group("relation"), match.group("relation")
+    )
+    first = next(value for value in integers if value)
+    if first < 0:
+        integers = [-value for value in integers]
+        relation = {"<": ">", "<=": ">=", ">": "<", ">=": "<="}[relation]
+    xmin, xmax, ymin, ymax = map(_fraction, context.bounds)
+    a, b, c = map(Fraction, integers)
+
+    def inside(point: tuple[Fraction, Fraction]) -> bool:
+        return xmin <= point[0] <= xmax and ymin <= point[1] <= ymax
+
+    candidates: list[tuple[Fraction, Fraction]] = []
+    if a:
+        candidates.append((-c / a, Fraction(0)))
+    if b:
+        candidates.append((Fraction(0), -c / b))
+    for step in _simple_lattice(400):
+        if b:
+            candidates.append((Fraction(step), -(a * step + c) / b))
+        if a:
+            candidates.append((-(b * step + c) / a, Fraction(step)))
+    chosen: list[tuple[Fraction, Fraction]] = []
+    for point in candidates:
+        if inside(point) and point not in chosen:
+            chosen.append(point)
+        if len(chosen) == 2:
+            break
+    if len(chosen) != 2:
+        raise PlanRefused(
+            "the graph bounds contain fewer than two exact boundary points"
+        )
+    return {
+        "kind": "linear-inequality",
+        "coefficients": {
+            "x": str(integers[0]),
+            "y": str(integers[1]),
+            "constant": str(integers[2]),
+        },
+        "relation": relation,
+        "boundary": "dashed" if relation in {"<", ">"} else "solid",
+        "points": [{"x": _written(px), "y": _written(py)} for px, py in chosen],
     }
