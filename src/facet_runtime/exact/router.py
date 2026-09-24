@@ -66,7 +66,8 @@ from facet_runtime.exact.labeled_point import (
 )
 from facet_runtime.exact.linear import (
     LINEAR_REQUEST,
-    construct_parallel_line,
+    VerticalLine,
+    construct_related_line,
     line_request_intent,
     render,
     render_explicit,
@@ -694,13 +695,17 @@ def solve_exact(
     # before the property route: both instructions name slope-intercept form,
     # but only this one owns an equation already present in the expressions.
     line_intent = line_request_intent(instruction, expressions)
-    if line_intent == "parallel":
-        line, refusal = construct_parallel_line(instruction, expressions, answer_parts)
-        if line is None and refusal:
-            return None, refusal
+    if line_intent in {"parallel", "perpendicular", "ambiguous-relative"}:
+        line, refusal = construct_related_line(instruction, expressions, answer_parts)
+        if line is None:
+            raise ExactlyRefused(refusal)
         if line is not None:
-            equation = Relation(
-                subject="y", value=render_explicit(line.slope, line.intercept)
+            equation = (
+                Relation(subject="x", value=str(line.x))
+                if isinstance(line, VerticalLine)
+                else Relation(
+                    subject="y", value=render_explicit(line.slope, line.intercept)
+                )
             )
             return (
                 ExactSolution(
@@ -709,7 +714,7 @@ def solve_exact(
                     entry_mode="math",
                     form=RELATION,
                     relation=equation,
-                    method=EXACT_METHOD,
+                    method=f"Exact {line_intent} line through a point",
                     evidence=line.evidence,
                 ),
                 "",

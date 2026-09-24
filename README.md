@@ -149,6 +149,17 @@ over exact rationals, puts every stated property back into the result, and
 declines rather than answering when one of them does not hold, when the
 properties disagree, or when they leave the line undetermined.
 
+The same line-construction architecture handles a line through one stated point
+parallel or perpendicular to one source equation. A shared affine reader
+simplifies both sides before deriving the exact source slope. Parallel keeps
+that slope; perpendicular uses its negative reciprocal, with explicit
+horizontal/vertical cases. The new intercept is computed from the stated point
+and verified by substitution. Relationship construction takes precedence over
+generic "express in slope-intercept form" wording. The result is a typed
+`relation`, and unsupported forms (including a vertical result requested in
+slope-intercept form), ambiguous data and non-rational/nonlinear sources are
+terminal refusals with no model fallback.
+
 The same exact route answers one normalized Cartesian point when the question
 asks for the coordinates of a labeled point. The consumer proves the label-to-
 point association and graph geometry before the point crosses; Facet returns

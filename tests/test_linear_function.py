@@ -345,12 +345,10 @@ def test_a_line_stated_against_another_line_is_refused_whole(instruction) -> Non
     A perpendicular's slope is the negative reciprocal of the one written on
     the page. Read literally, this derives `2x+1` -- wrong, and confidently so.
     """
-    solution, decline = solve_exact(instruction, ["(1,3)"])
+    from facet_runtime.exact.router import ExactlyRefused
 
-    assert solution is None
-    assert decline == (
-        "a line stated by its relation to another line is not derived here"
-    )
+    with pytest.raises(ExactlyRefused, match="requires one exact source equation"):
+        solve_exact(instruction, ["(1,3)"])
 
 
 def test_a_decimal_property_stays_an_exact_rational() -> None:

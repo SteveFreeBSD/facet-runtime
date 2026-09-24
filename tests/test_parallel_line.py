@@ -10,6 +10,7 @@ from facet_runtime.exact import (
     line_request_intent,
     solve_exact,
 )
+from facet_runtime.exact.router import ExactlyRefused
 from facet_runtime.solve import MathProblem, solve_math
 
 LIVE = (
@@ -111,14 +112,14 @@ def test_live_reader_shape_keeps_point_as_a_separate_expression():
 
 
 def test_vertical_source_line_fails_closed():
-    solution, decline = solve_exact(
-        "Find the equation of the line through (2,5) parallel to the given "
-        "line. Express your answer in slope-intercept form.",
-        ["x=3"],
-    )
-
-    assert solution is None
-    assert "cannot be isolated as a linear y equation" in decline
+    with pytest.raises(
+        ExactlyRefused, match="cannot be isolated as a linear y equation"
+    ):
+        solve_exact(
+            "Find the equation of the line through (2,5) parallel to the given "
+            "line. Express your answer in slope-intercept form.",
+            ["x=3"],
+        )
 
 
 @pytest.mark.parametrize(

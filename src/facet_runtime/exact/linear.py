@@ -12,11 +12,11 @@ mathematics here, and it is arithmetic over exact rationals: solve for `m` and
 `b`, then put every stated property back into `y = mx + b` and check it. A
 property that does not check is a refusal, never a rounding.
 
-What is deliberately absent is inference. This reads explicit statements of a
-line's properties in the forms Hawkes writes them, and declines everything else
--- a word problem that implies a rate, a line described by its relationship to
-another line, a vertical line, a single point on its own. A decline here costs
-a reasoning call; a guess here costs a wrong answer typed into real coursework.
+What is deliberately absent is inference. The property reader consumes explicit
+facts, while the shared relative-line constructor consumes one source equation
+and one through-point. Parallel and perpendicular constructions are sibling
+operations over the same exact affine coefficients. An unsupported construction
+or requested output form is a terminal refusal, never a model's guess.
 """
 
 from __future__ import annotations
@@ -29,7 +29,9 @@ import sympy
 #: An exact rational, as any of the forms a Hawkes page writes one in: an
 #: integer, a decimal, `a/b`, or MathJax's `\frac{a}{b}`. Never a float --
 #: `0.1` is read as one tenth, and stays one tenth all the way to the answer.
-_VALUE = r"(?:\\frac\{[^{}]+\}\{[^{}]+\}|[+−-]?\s*\d+\s*/\s*\d+|[+−-]?\s*\d*\.?\d+)"
+_VALUE = (
+    r"(?:[+−-]?\s*\\frac\{[^{}]+\}\{[^{}]+\}|[+−-]?\s*\d+\s*/\s*\d+|[+−-]?\s*\d*\.?\d+)"
+)
 
 #: The question this module answers. Both halves are required: a request verb,
 #: and a line or linear function as the thing requested. "Graph the linear
@@ -105,7 +107,8 @@ _THROUGH = re.compile(
 #: slope of a perpendicular is the negative reciprocal of the one written down.
 #: Read literally, "perpendicular to a line with a slope of 2, through (1,3)"
 #: derives `2x+1`, which is confidently and completely wrong, so the whole
-#: family is refused rather than partly understood.
+#: property reader refuses it rather than partly understanding it. The shared
+#: relative-line constructor above that reader owns equation-based requests.
 RELATIVE_TO_ANOTHER_LINE = re.compile(
     r"\b(?:parallel|perpendicular|orthogonal|normal\s+to)\b", re.IGNORECASE
 )
@@ -156,19 +159,20 @@ def subject(instruction: str, expressions: list[str]) -> str:
 def rational(text: str) -> sympy.Rational | None:
     """One exact rational, or None when the text is not a number at all."""
     cleaned = text.replace("−", "-").replace(" ", "")
-    fraction = re.fullmatch(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", cleaned)
+    fraction = re.fullmatch(r"([+-]?)\\frac\{([^{}]+)\}\{([^{}]+)\}", cleaned)
     if fraction:
-        top, bottom = (rational(part) for part in fraction.groups())
+        sign, numerator, denominator = fraction.groups()
+        top, bottom = rational(numerator), rational(denominator)
         if top is None or bottom is None or bottom == 0:
             return None
-        return sympy.Rational(top, bottom)
+        return (-1 if sign == "-" else 1) * sympy.Rational(top, bottom)
     if not re.fullmatch(r"[+-]?(?:\d+/\d+|\d*\.?\d+)", cleaned):
         return None
     try:
         value = sympy.Rational(cleaned)
     except (TypeError, ValueError, ZeroDivisionError):
         return None
-    return value
+    return value if value.is_Rational else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +200,14 @@ class DerivedLine:
     evidence: dict[str, str]
 
 
+@dataclass(frozen=True, slots=True)
+class VerticalLine:
+    """A constructed line that has no slope-intercept representation."""
+
+    x: sympy.Rational
+    evidence: dict[str, str]
+
+
 def line_request_intent(instruction: str, expressions: list[str]) -> str:
     """Classify richer line construction before its requested output format.
 
@@ -203,12 +215,16 @@ def line_request_intent(instruction: str, expressions: list[str]) -> str:
     not which line to answer with.  Relationship and point data therefore win
     before the generic conversion wording is considered.
     """
-    if POINT_SLOPE_REQUEST.search(instruction):
-        return "point-slope"
+    if re.search(
+        r"\b(?:perpendicular|orthogonal)\b", instruction, re.IGNORECASE
+    ) and re.search(r"\bparallel\b", instruction, re.IGNORECASE):
+        return "ambiguous-relative"
     if PERPENDICULAR_LINE_REQUEST.search(instruction):
         return "perpendicular"
     if PARALLEL_LINE_REQUEST.search(instruction):
         return "parallel"
+    if POINT_SLOPE_REQUEST.search(instruction):
+        return "point-slope"
     points = {
         (match.group("x").replace(" ", ""), match.group("y").replace(" ", ""))
         for text in (instruction, *expressions)
@@ -221,8 +237,8 @@ def line_request_intent(instruction: str, expressions: list[str]) -> str:
     return ""
 
 
-def _line_from_equation(expression: str) -> tuple[DerivedLine | None, str]:
-    """Read one rational nonvertical linear equation as an exact line."""
+def _affine_from_equation(expression: str) -> tuple[tuple | None, str]:
+    """Simplify one exact equation to Ax+By+C=0, including vertical lines."""
     if expression.count("=") != 1:
         return None, "slope-intercept form requires one exact equation"
 
@@ -245,13 +261,31 @@ def _line_from_equation(expression: str) -> tuple[DerivedLine | None, str]:
         coefficient_x = polynomial.coeff_monomial(x)
         coefficient_y = polynomial.coeff_monomial(y)
         constant = polynomial.coeff_monomial(1)
-    except (ValueError, SyntaxError, TypeError, sympy.PolynomialError):
+    except (
+        ValueError,
+        SyntaxError,
+        TypeError,
+        sympy.polys.polyerrors.BasePolynomialError,
+    ):
         return None, "slope-intercept form requires a rational linear equation"
 
+    if coefficient_x == 0 and coefficient_y == 0:
+        return None, "the equation does not determine a line"
+    return (coefficient_x, coefficient_y, constant), ""
+
+
+def _line_from_equation(expression: str) -> tuple[DerivedLine | None, str]:
+    """The shared affine reader, restricted to a slope-intercept result."""
+    coefficients, refusal = _affine_from_equation(expression)
+    if coefficients is None:
+        return None, refusal
+    coefficient_x, coefficient_y, constant = coefficients
     if coefficient_y == 0:
         return None, "the equation cannot be isolated as a linear y equation"
     slope = sympy.Rational(-coefficient_x, coefficient_y)
     intercept = sympy.Rational(-constant, coefficient_y)
+    x, y = sympy.symbols("x y", real=True)
+    difference = coefficient_x * x + coefficient_y * y + constant
     if sympy.expand(difference.subs(y, slope * x + intercept)) != 0:
         return None, "the isolated equation did not verify against its source"
     return (
@@ -294,28 +328,48 @@ def rewrite_in_slope_intercept_form(
 
 def construct_parallel_line(
     instruction: str, expressions: list[str], answer_parts: int = 1
-) -> tuple[DerivedLine | None, str]:
-    """Construct the line through one stated point parallel to a given line."""
+) -> tuple[DerivedLine | VerticalLine | None, str]:
+    """Compatibility entry point for the shared relative-line constructor."""
     if line_request_intent(instruction, expressions) != "parallel":
         return None, ""
+    return construct_related_line(instruction, expressions, answer_parts)
+
+
+def construct_related_line(
+    instruction: str, expressions: list[str], answer_parts: int = 1
+) -> tuple[DerivedLine | VerticalLine | None, str]:
+    """Parallel and perpendicular lines are siblings over one affine reader."""
+    relationship = line_request_intent(instruction, expressions)
+    if relationship not in {"parallel", "perpendicular"}:
+        return None, "the line relationship is ambiguous"
     if answer_parts != 1:
         return None, (
-            "a parallel line is one equation but the answer shape requires "
+            f"a {relationship} line is one equation but the answer shape requires "
             f"{answer_parts}"
         )
+    if POINT_SLOPE_REQUEST.search(instruction) or re.search(
+        r"\b(?:standard|general|parametric|normal)\s+form\b", instruction, re.IGNORECASE
+    ):
+        return None, "the requested output form is not supported for line construction"
+    if not _THROUGH.search(instruction):
+        return None, "line construction requires an explicitly stated through-point"
     equations = [expression for expression in expressions if expression.count("=") == 1]
     if len(equations) != 1 or any(
         expression.count("=") > 1 for expression in expressions
     ):
-        # A relationship stated only as a slope is the older property family,
-        # whose established fail-closed refusal remains authoritative. This
-        # route owns a *given equation*, not every sentence containing the word
-        # parallel.
-        return None, ""
+        return None, "line construction requires one exact source equation"
     source_equation = equations[0]
-    source, refusal = _line_from_equation(source_equation)
+    source, refusal = _affine_from_equation(source_equation)
     if source is None:
         return None, refusal
+    coefficient_x, coefficient_y, _ = source
+    # Every additional math fragment must be the point itself; silently
+    # ignoring a second constraint would construct a different problem.
+    if any(
+        expression != source_equation and not _POINT.fullmatch(expression.strip())
+        for expression in expressions
+    ):
+        return None, "a line-construction constraint could not be read exactly"
 
     points = {
         (rational(match.group("x")), rational(match.group("y")))
@@ -323,20 +377,50 @@ def construct_parallel_line(
         for match in _POINT.finditer(text)
     }
     if len(points) != 1 or any(value is None for point in points for value in point):
-        return None, "a parallel construction requires one exact stated point"
+        return None, f"a {relationship} construction requires one exact stated point"
     point_x, point_y = points.pop()
-    intercept = sympy.Rational(point_y - source.slope * point_x)
-    if sympy.simplify(source.slope * point_x + intercept - point_y) != 0:
-        return None, "the constructed parallel line did not contain its stated point"
+    source_slope = None if coefficient_y == 0 else -coefficient_x / coefficient_y
+    # A normal (A,B) to the original line is a direction of its perpendicular.
+    # This handles m=0 and a vertical source without dividing by zero.
+    vertical = coefficient_y == 0 if relationship == "parallel" else coefficient_x == 0
+    evidence = {
+        "source_equation": source_equation,
+        "source_slope": "undefined" if source_slope is None else str(source_slope),
+        "stated_point": f"({point_x},{point_y})",
+    }
+    if vertical:
+        if re.search(r"\bslope[-\s]intercept\s+form\b", instruction, re.IGNORECASE):
+            return (
+                None,
+                "the constructed vertical line cannot be isolated as a linear y equation in slope-intercept form",
+            )
+        return VerticalLine(
+            point_x,
+            {
+                **evidence,
+                f"{relationship}_slope": "undefined",
+                "x_intercept": str(point_x),
+                "verification": f"x={point_x}",
+            },
+        ), ""
+    if relationship == "parallel":
+        slope = source_slope
+    elif source_slope is None:
+        slope = sympy.Integer(0)
+    else:
+        slope = -1 / source_slope
+    intercept = sympy.Rational(point_y - slope * point_x)
+    if slope * point_x + intercept != point_y:
+        return None, "the constructed line did not contain its stated point"
+    if relationship == "perpendicular" and coefficient_y - coefficient_x * slope != 0:
+        return None, "the constructed line is not perpendicular to its source"
     return (
         DerivedLine(
-            slope=source.slope,
+            slope=slope,
             intercept=intercept,
             evidence={
-                "source_equation": source_equation,
-                "source_slope": str(source.slope),
-                "stated_point": f"({point_x},{point_y})",
-                "parallel_slope": str(source.slope),
+                **evidence,
+                f"{relationship}_slope": str(slope),
                 "y_intercept": str(intercept),
                 "verification": f"f({point_x})={point_y}",
             },
