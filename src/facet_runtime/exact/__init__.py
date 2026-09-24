@@ -6,7 +6,13 @@ from facet_runtime.exact.intercepts import (
     Coordinate,
     solve_axis_intercepts,
 )
-from facet_runtime.exact.linear import solve_linear_function, subject
+from facet_runtime.exact.linear import (
+    construct_parallel_line,
+    line_request_intent,
+    rewrite_in_slope_intercept_form,
+    solve_linear_function,
+    subject,
+)
 from facet_runtime.exact.regression import (
     NotThisQuestion,
     fit_quadratic,
@@ -84,15 +90,18 @@ __all__ = [
     "TableUnverifiable",
     "classify_polynomial",
     "complete_table",
+    "construct_parallel_line",
     "entry_text",
     "evaluate_real_radical",
     "extract_final_math",
     "fit_quadratic",
     "is_prose",
+    "line_request_intent",
     "parse_answer_table",
     "parse_representation",
     "rate_unit",
     "regression_optimum",
+    "rewrite_in_slope_intercept_form",
     "solve_axis_intercepts",
     "solve_exact",
     "solve_linear_function",

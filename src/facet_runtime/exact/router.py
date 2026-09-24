@@ -61,7 +61,11 @@ from facet_runtime.exact.intercepts import (
 )
 from facet_runtime.exact.linear import (
     LINEAR_REQUEST,
+    construct_parallel_line,
+    line_request_intent,
     render,
+    render_explicit,
+    rewrite_in_slope_intercept_form,
     solve_linear_function,
     subject,
 )
@@ -623,6 +627,59 @@ def solve_exact(
             )
         if refusal:
             return None, refusal
+
+    # A written linear equation being rearranged into y=mx+b.  This must run
+    # before the property route: both instructions name slope-intercept form,
+    # but only this one owns an equation already present in the expressions.
+    line_intent = line_request_intent(instruction, expressions)
+    if line_intent == "parallel":
+        line, refusal = construct_parallel_line(instruction, expressions, answer_parts)
+        if line is None and refusal:
+            return None, refusal
+        if line is not None:
+            equation = Relation(
+                subject="y", value=render_explicit(line.slope, line.intercept)
+            )
+            return (
+                ExactSolution(
+                    display=equation.written,
+                    entry=equation.written,
+                    entry_mode="math",
+                    form=RELATION,
+                    relation=equation,
+                    method=EXACT_METHOD,
+                    evidence=line.evidence,
+                ),
+                "",
+            )
+
+    if line_intent == "rewrite":
+        line, refusal = rewrite_in_slope_intercept_form(
+            instruction, expressions, answer_parts
+        )
+        if line is None:
+            return None, refusal
+        equation = Relation(
+            subject="y", value=render_explicit(line.slope, line.intercept)
+        )
+        return (
+            ExactSolution(
+                display=equation.written,
+                entry=equation.written,
+                entry_mode="math",
+                form=RELATION,
+                relation=equation,
+                method=EXACT_METHOD,
+                evidence=line.evidence,
+            ),
+            "",
+        )
+
+    # These are richer construction operations, not rewrites of the given
+    # equation. Keep them out of both the generic output-format route above
+    # and the property route below until their own exact semantics own them.
+    if line_intent == "point-slope":
+        return None, f"exact {line_intent} line construction is not supported"
 
     # A line stated as its properties rather than written down. Two facts fix
     # it and one does not, so this either computes both and proves every stated

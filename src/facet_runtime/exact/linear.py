@@ -29,7 +29,7 @@ import sympy
 #: An exact rational, as any of the forms a Hawkes page writes one in: an
 #: integer, a decimal, `a/b`, or MathJax's `\frac{a}{b}`. Never a float --
 #: `0.1` is read as one tenth, and stays one tenth all the way to the answer.
-_VALUE = r"(?:\\frac\{[^{}]+\}\{[^{}]+\}|[+-]?\s*\d+\s*/\s*\d+|[+-]?\s*\d*\.?\d+)"
+_VALUE = r"(?:\\frac\{[^{}]+\}\{[^{}]+\}|[+−-]?\s*\d+\s*/\s*\d+|[+−-]?\s*\d*\.?\d+)"
 
 #: The question this module answers. Both halves are required: a request verb,
 #: and a line or linear function as the thing requested. "Graph the linear
@@ -41,6 +41,22 @@ LINEAR_REQUEST = re.compile(
     r"|slope[-\s]intercept\s+form)\b",
     re.IGNORECASE,
 )
+
+#: A written equation to rearrange, rather than properties from which to
+#: derive a line.  Kept separate from ``LINEAR_REQUEST`` because the latter
+#: also owns questions such as "find the equation ... through this point",
+#: while this route requires an equation already present on the page.
+SLOPE_INTERCEPT_REWRITE_REQUEST = re.compile(
+    r"\b(?:convert|express|rewrite|write|put)\b[^.?!]*?"
+    r"\b(?:in|into|to)\s+slope[-\s]intercept\s+form\b",
+    re.IGNORECASE,
+)
+
+PARALLEL_LINE_REQUEST = re.compile(r"\bparallel\s+to\b", re.IGNORECASE)
+PERPENDICULAR_LINE_REQUEST = re.compile(
+    r"\b(?:perpendicular|orthogonal)\s+to\b", re.IGNORECASE
+)
+POINT_SLOPE_REQUEST = re.compile(r"\bpoint[-\s]slope\s+form\b", re.IGNORECASE)
 
 # The properties, each in the spellings Hawkes uses. Every one of them names
 # what it is: there is no pattern here that reads a bare number as a slope.
@@ -178,6 +194,180 @@ class DerivedLine:
     slope: sympy.Rational
     intercept: sympy.Rational
     evidence: dict[str, str]
+
+
+def line_request_intent(instruction: str, expressions: list[str]) -> str:
+    """Classify richer line construction before its requested output format.
+
+    "Express your answer in slope-intercept form" says how to write an answer,
+    not which line to answer with.  Relationship and point data therefore win
+    before the generic conversion wording is considered.
+    """
+    if POINT_SLOPE_REQUEST.search(instruction):
+        return "point-slope"
+    if PERPENDICULAR_LINE_REQUEST.search(instruction):
+        return "perpendicular"
+    if PARALLEL_LINE_REQUEST.search(instruction):
+        return "parallel"
+    points = {
+        (match.group("x").replace(" ", ""), match.group("y").replace(" ", ""))
+        for text in (instruction, *expressions)
+        for match in _POINT.finditer(text)
+    }
+    if len(points) >= 2 and _THROUGH.search(instruction):
+        return "two-points"
+    if SLOPE_INTERCEPT_REWRITE_REQUEST.search(instruction):
+        return "rewrite"
+    return ""
+
+
+def _line_from_equation(expression: str) -> tuple[DerivedLine | None, str]:
+    """Read one rational nonvertical linear equation as an exact line."""
+    if expression.count("=") != 1:
+        return None, "slope-intercept form requires one exact equation"
+
+    # Imported here to keep the line-property reader independent of the much
+    # larger symbolic operation router.  This is the same bounded AST parser
+    # every exact algebra route uses; no ``sympify`` or arbitrary evaluation.
+    from facet_runtime.exact.symbolic import _safe_sympy_expression
+
+    written_left, written_right = expression.split("=", 1)
+    try:
+        left = _safe_sympy_expression(written_left)
+        right = _safe_sympy_expression(written_right)
+        x, y = sympy.Symbol("x", real=True), sympy.Symbol("y", real=True)
+        difference = sympy.expand(left - right)
+        if difference.free_symbols - {x, y}:
+            return None, "slope-intercept form contains an unsupported symbol"
+        polynomial = sympy.Poly(difference, x, y, domain=sympy.QQ)
+        if polynomial.total_degree() > 1:
+            return None, "slope-intercept form requires a linear equation"
+        coefficient_x = polynomial.coeff_monomial(x)
+        coefficient_y = polynomial.coeff_monomial(y)
+        constant = polynomial.coeff_monomial(1)
+    except (ValueError, SyntaxError, TypeError, sympy.PolynomialError):
+        return None, "slope-intercept form requires a rational linear equation"
+
+    if coefficient_y == 0:
+        return None, "the equation cannot be isolated as a linear y equation"
+    slope = sympy.Rational(-coefficient_x, coefficient_y)
+    intercept = sympy.Rational(-constant, coefficient_y)
+    if sympy.expand(difference.subs(y, slope * x + intercept)) != 0:
+        return None, "the isolated equation did not verify against its source"
+    return (
+        DerivedLine(
+            slope=slope,
+            intercept=intercept,
+            evidence={
+                "source_equation": expression,
+                "slope": str(slope),
+                "y_intercept": str(intercept),
+                "verification": "source equation becomes 0=0",
+            },
+        ),
+        "",
+    )
+
+
+def rewrite_in_slope_intercept_form(
+    instruction: str, expressions: list[str], answer_parts: int = 1
+) -> tuple[DerivedLine | None, str]:
+    """Isolate ``y`` in one exact linear equation, or fail closed.
+
+    This is intentionally a rearrangement route, not the property reader
+    below it.  It accepts only one equality whose symbols are ``x`` and ``y``
+    and whose total degree is at most one.  In particular, a vertical line,
+    another subject, a nonlinear relation, or an equation with an unknown
+    parameter is not silently coerced into slope-intercept form.
+    """
+    if line_request_intent(instruction, expressions) != "rewrite":
+        return None, ""
+    if answer_parts != 1:
+        return None, (
+            "slope-intercept form is one equation but the answer shape requires "
+            f"{answer_parts}"
+        )
+    if len(expressions) != 1:
+        return None, "slope-intercept form requires one exact equation"
+    return _line_from_equation(expressions[0])
+
+
+def construct_parallel_line(
+    instruction: str, expressions: list[str], answer_parts: int = 1
+) -> tuple[DerivedLine | None, str]:
+    """Construct the line through one stated point parallel to a given line."""
+    if line_request_intent(instruction, expressions) != "parallel":
+        return None, ""
+    if answer_parts != 1:
+        return None, (
+            "a parallel line is one equation but the answer shape requires "
+            f"{answer_parts}"
+        )
+    equations = [expression for expression in expressions if expression.count("=") == 1]
+    if len(equations) != 1 or any(
+        expression.count("=") > 1 for expression in expressions
+    ):
+        # A relationship stated only as a slope is the older property family,
+        # whose established fail-closed refusal remains authoritative. This
+        # route owns a *given equation*, not every sentence containing the word
+        # parallel.
+        return None, ""
+    source_equation = equations[0]
+    source, refusal = _line_from_equation(source_equation)
+    if source is None:
+        return None, refusal
+
+    points = {
+        (rational(match.group("x")), rational(match.group("y")))
+        for text in (instruction, *expressions)
+        for match in _POINT.finditer(text)
+    }
+    if len(points) != 1 or any(value is None for point in points for value in point):
+        return None, "a parallel construction requires one exact stated point"
+    point_x, point_y = points.pop()
+    intercept = sympy.Rational(point_y - source.slope * point_x)
+    if sympy.simplify(source.slope * point_x + intercept - point_y) != 0:
+        return None, "the constructed parallel line did not contain its stated point"
+    return (
+        DerivedLine(
+            slope=source.slope,
+            intercept=intercept,
+            evidence={
+                "source_equation": source_equation,
+                "source_slope": str(source.slope),
+                "stated_point": f"({point_x},{point_y})",
+                "parallel_slope": str(source.slope),
+                "y_intercept": str(intercept),
+                "verification": f"f({point_x})={point_y}",
+            },
+        ),
+        "",
+    )
+
+
+def render_explicit(slope: sympy.Rational, intercept: sympy.Rational) -> str:
+    """Render ``mx+b`` with unambiguous multiplication for machine entry.
+
+    A rational coefficient followed immediately by ``x`` is visually common
+    but textually ambiguous (`3/2x` can mean `3/(2x)`).  ``*`` preserves the
+    mathematical tree across the protocol; Hawkes' planner later turns that
+    tree into juxtaposition after building the native fraction object.
+    """
+    if slope == 0:
+        term = ""
+    elif slope == 1:
+        term = "x"
+    elif slope == -1:
+        term = "-x"
+    elif slope.is_Integer:
+        term = f"{slope}x"
+    else:
+        term = f"{slope}*x"
+    if intercept == 0:
+        return term or "0"
+    if not term:
+        return str(intercept)
+    return f"{term}{'+' if intercept > 0 else '-'}{abs(intercept)}"
 
 
 def _slope(value, text) -> Property:
