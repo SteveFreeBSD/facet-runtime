@@ -51,6 +51,30 @@ INEQUALITY_METHOD = "SymPy exact linear inequality"
 #: inequality", "the following compound inequality", "solve the inequalities".
 INEQUALITY_REQUEST = re.compile(r"\binequalit(?:y|ies)\b", re.IGNORECASE)
 
+#: This step asks for the defining pair, not for the set the pair solves to.
+#: Kept separate from the interval/graph route because replacing this answer
+#: with its solved interval would answer a later step instead of this one.
+INEQUALITY_PAIR_REQUEST = re.compile(
+    r"\brewrite\b[^.?!]*\bas\b[^.?!]*\btwo\s+linear\s+inequalities\b",
+    re.IGNORECASE,
+)
+
+#: A choice surface whose alternatives are complete graphs of the inequality.
+#: This is not the ordinary "graph the solution" writer: the answer is one of
+#: the page-published semantic graph descriptions, selected by exact geometry.
+INEQUALITY_GRAPH_CHOICE_REQUEST = re.compile(
+    r"\b(?:determine|choose|select|identify)\b[^.?!]*\bgraph\b"
+    r"[^.?!]*\b(?:inequality|solution)\b",
+    re.IGNORECASE,
+)
+
+_GRAPH_CHOICE = re.compile(
+    r"Graph:\s*x=(?P<left>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s+"
+    r"(?P<left_style>solid|dashed);\s*x="
+    r"(?P<right>[+-]?(?:\d+(?:\.\d*)?|\.\d+))\s+"
+    r"(?P<right_style>solid|dashed);\s*shade=(?P<shade>between|outside)"
+)
+
 #: The notation the answer is asked in. Interval notation is the one this
 #: family writes; set-builder and inequality notation are different answers to
 #: the same question, and are declined rather than silently replaced.
@@ -123,6 +147,144 @@ class SolvedInequality:
     written: str
     solution: sympy.Set
     evidence: dict[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class WrittenComparison:
+    """One comparison answer, held as its two sides and relation."""
+
+    left: str
+    relation: str
+    right: str
+
+    @property
+    def written(self) -> str:
+        return f"{self.left}{self.relation}{self.right}"
+
+
+@dataclass(frozen=True, slots=True)
+class InequalityPair:
+    """Two inequalities and the logical connector the requested rewrite needs."""
+
+    left: WrittenComparison
+    connector: str
+    right: WrittenComparison
+
+    @property
+    def written(self) -> str:
+        return f"{self.left.written} {self.connector.upper()} {self.right.written}"
+
+
+def choose_linear_inequality_graph(
+    instruction: str, expressions: list[str], choices: list[str]
+) -> tuple[str | None, dict[str, str], str]:
+    """Match one page-described graph to the exact inequality solution set.
+
+    Alternatives cross as semantic geometry, never as option positions: two
+    vertical boundaries, their open/closed stroke, and whether the shaded set
+    lies between or outside them.  Hawkes' floating graph coordinates are
+    compared to SymPy's exact endpoints only within a small numeric tolerance.
+    """
+    if not INEQUALITY_GRAPH_CHOICE_REQUEST.search(instruction):
+        return None, {}, "the instruction does not ask to choose an inequality graph"
+    parsed: list[tuple[str, float, str, float, str, str]] = []
+    for choice in choices:
+        match = _GRAPH_CHOICE.fullmatch(choice.strip())
+        if match is None:
+            return None, {}, "a graph alternative has no exact semantic description"
+        left = float(match.group("left"))
+        right = float(match.group("right"))
+        if not left < right:
+            return None, {}, "a graph alternative has unordered boundaries"
+        parsed.append(
+            (
+                choice,
+                left,
+                match.group("left_style"),
+                right,
+                match.group("right_style"),
+                match.group("shade"),
+            )
+        )
+    if len(parsed) < 2:
+        return (
+            None,
+            {},
+            "the graph-choice surface published fewer than two alternatives",
+        )
+
+    # Reuse the closed linear/absolute-value solver while making explicit the
+    # representation requested by this surface.  Appending this sentence does
+    # not change ordinal scope in the original instruction.
+    solved, refusal = solve_linear_inequality(
+        f"{instruction} Graph the solution set.", expressions
+    )
+    if solved is None:
+        return None, {}, refusal
+
+    solution = solved.solution
+    if isinstance(solution, sympy.Interval) and all(
+        endpoint not in {-sympy.oo, sympy.oo}
+        for endpoint in (solution.start, solution.end)
+    ):
+        expected = (
+            float(solution.start),
+            "dashed" if solution.left_open else "solid",
+            float(solution.end),
+            "dashed" if solution.right_open else "solid",
+            "between",
+        )
+    elif isinstance(solution, sympy.Union) and len(solution.args) == 2:
+        intervals = sorted(solution.args, key=lambda part: part.inf)
+        left_ray, right_ray = intervals
+        if not (
+            isinstance(left_ray, sympy.Interval)
+            and isinstance(right_ray, sympy.Interval)
+            and left_ray.start == -sympy.oo
+            and right_ray.end == sympy.oo
+            and left_ray.end not in {-sympy.oo, sympy.oo}
+            and right_ray.start not in {-sympy.oo, sympy.oo}
+        ):
+            return None, {}, "the exact solution is not a two-boundary graph"
+        expected = (
+            float(left_ray.end),
+            "dashed" if left_ray.right_open else "solid",
+            float(right_ray.start),
+            "dashed" if right_ray.left_open else "solid",
+            "outside",
+        )
+    else:
+        return None, {}, "the exact solution is not a two-boundary graph"
+
+    near = lambda left, right: abs(left - right) < 1e-8
+    matches = [
+        choice
+        for choice, left, left_style, right, right_style, shade in parsed
+        if near(left, expected[0])
+        and left_style == expected[1]
+        and near(right, expected[2])
+        and right_style == expected[3]
+        and shade == expected[4]
+    ]
+    if len(matches) != 1:
+        return (
+            None,
+            {},
+            "the exact solution does not identify one unique graph alternative",
+        )
+    return (
+        matches[0],
+        {
+            **solved.evidence,
+            "left_boundary": str(sympy.nsimplify(expected[0])),
+            "right_boundary": str(sympy.nsimplify(expected[2])),
+            "left_style": expected[1],
+            "right_style": expected[3],
+            "shading": expected[4],
+            "matching_choices": "1",
+        },
+        "",
+    )
 
 
 def _normalized(text: str) -> str:
@@ -342,6 +504,68 @@ def _linear(expression: sympy.Expr, variable: sympy.Symbol, what: str):
 #: The comparison an absolute value's lower branch makes: `|u| > c` holds
 #: where `u < -c`, and `|u| >= c` where `u <= -c`.
 _MIRRORED = {">": "<", ">=": "<="}
+
+
+def rewrite_absolute_value_inequality(
+    instruction: str, expressions: list[str]
+) -> tuple[InequalityPair | None, str]:
+    """Rewrite one affine absolute-value inequality as its defining pair."""
+    if not INEQUALITY_PAIR_REQUEST.search(instruction):
+        return None, "the step does not ask for two rewritten linear inequalities"
+    try:
+        statements = read_statements(expressions)
+        if len(statements) != 1 or len(statements[0]) != 1:
+            raise InequalityDeclined(
+                "rewriting an absolute value requires one stated inequality"
+            )
+        comparison = statements[0][0]
+        variable = _variable([comparison])
+        residual = sympy.expand(comparison.left - comparison.right)
+        absolutes = residual.atoms(sympy.Abs)
+        if len(absolutes) != 1:
+            raise InequalityDeclined("rewriting requires exactly one absolute value")
+        (absolute,) = absolutes
+        inner = sympy.expand(absolute.args[0])
+        if variable not in inner.free_symbols:
+            raise InequalityDeclined("the absolute value has no variable in it")
+        _linear(inner, variable, "the expression inside the absolute value")
+
+        marker = sympy.Dummy("absolute")
+        outside = sympy.expand(residual.subs(absolute, marker))
+        if variable in outside.free_symbols:
+            raise InequalityDeclined(
+                "the variable also occurs outside the absolute value"
+            )
+        scale, offset = _linear(outside, marker, "the absolute-value inequality")
+        if scale == 0:
+            raise InequalityDeclined("the absolute value cancels out")
+        relation = comparison.operator
+        if scale < 0:
+            relation = _REVERSED[relation]
+        bound = sympy.factor(-offset / scale)
+        if bound <= 0:
+            raise InequalityDeclined(
+                "the isolated absolute-value bound is not positive"
+            )
+
+        inside = sympy.sstr(inner)
+        limit = sympy.sstr(bound)
+        negative = sympy.sstr(-bound)
+        if relation in ("<", "<="):
+            pair = InequalityPair(
+                left=WrittenComparison(negative, relation, inside),
+                connector="and",
+                right=WrittenComparison(inside, relation, limit),
+            )
+        else:
+            pair = InequalityPair(
+                left=WrittenComparison(inside, _MIRRORED[relation], negative),
+                connector="or",
+                right=WrittenComparison(inside, relation, limit),
+            )
+    except (InequalityDeclined, TypeError) as decline:
+        return None, str(decline)
+    return pair, ""
 
 
 def _solve(comparison: Comparison, variable: sympy.Symbol) -> tuple[sympy.Set, str]:

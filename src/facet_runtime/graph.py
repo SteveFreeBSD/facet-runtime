@@ -49,6 +49,7 @@ QUADRATIC_REGRESSION = "quadratic_regression"
 POINT_PLOT_PLAN = "point_plot_plan"
 LINEAR_GRAPH_PLAN = "linear_graph_plan"
 LINEAR_INEQUALITY_GRAPH_PLAN = "linear_inequality_graph_plan"
+LINEAR_INEQUALITY_SYSTEM_GRAPH_PLAN = "linear_inequality_system_graph_plan"
 
 #: How many points a plotting question may ask for. Hawkes draws one draggable
 #: control per point, and a question asking for none or for dozens is not the
@@ -71,6 +72,8 @@ LINE_GRAPH_ORIENTATION = "cartesian"
 LINE_GRAPH_CONTROLS = "two-points"
 INEQUALITY_GRAPH_FAMILY = "linear-inequality"
 INEQUALITY_GRAPH_CONTROLS = "boundary-two-points-regions"
+INEQUALITY_SYSTEM_GRAPH_FAMILY = "linear-inequality-system"
+INEQUALITY_SYSTEM_GRAPH_CONTROLS = "mounted-boundaries-combined-regions"
 
 MIN_REGRESSION_POINTS = 3
 MAX_REGRESSION_POINTS = 32
@@ -85,19 +88,23 @@ class GraphContext:
     """Normalised geometry: what the grid is, never what the page is."""
 
     family: str
-    orientation: str
-    bounds: tuple[float, float, float, float]
-    snap: tuple[float, float]
+    orientation: str | None
+    bounds: tuple[float, ...]
+    snap: tuple[float, ...]
     controls: str
+    connector: str | None = None
 
     def as_json(self) -> dict[str, Any]:
-        return {
+        result = {
             "family": self.family,
             "orientation": self.orientation,
             "bounds": list(self.bounds),
             "snap": list(self.snap),
             "controls": self.controls,
         }
+        if self.connector is not None:
+            result["connector"] = self.connector
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +143,25 @@ def _exact_keys(payload: Any, expected: tuple[str, ...], where: str) -> dict[str
 
 def parse_graph_context(payload: Any) -> GraphContext:
     """Read the normalized geometry a function plan is drawn on."""
+    if (
+        isinstance(payload, dict)
+        and payload.get("family") == INEQUALITY_SYSTEM_GRAPH_FAMILY
+    ):
+        fields = _exact_keys(payload, ("family", "controls", "connector"), "graph")
+        if fields["controls"] != INEQUALITY_SYSTEM_GRAPH_CONTROLS:
+            raise PlanRefused(
+                "a linear inequality system needs its mounted-region controls"
+            )
+        if fields["connector"] not in {"and", "or"}:
+            raise PlanRefused("a linear inequality system needs an and/or connector")
+        return GraphContext(
+            family=fields["family"],
+            orientation=None,
+            bounds=(),
+            snap=(),
+            controls=fields["controls"],
+            connector=fields["connector"],
+        )
     fields = _exact_keys(
         payload, ("family", "orientation", "bounds", "snap", "controls"), "graph"
     )
@@ -496,35 +522,8 @@ def build_linear_graph_plan(
 _INEQUALITY = re.compile(r"(?P<relation><=|>=|≤|≥|<|>|\\leq?|\\geq?)")
 
 
-def build_linear_inequality_graph_plan(
-    instruction: str, expressions: list[str], context: GraphContext
-) -> dict[str, Any]:
-    """Derive the exact boundary and half-plane relation for one inequality."""
-    if not re.search(
-        r"\bgraph\b[^.?!]*\b(?:linear\s+)?inequalit", instruction, re.IGNORECASE
-    ):
-        raise PlanRefused("this is not a request to graph a linear inequality")
-    if (
-        context.family != INEQUALITY_GRAPH_FAMILY
-        or context.orientation != LINE_GRAPH_ORIENTATION
-        or context.controls != INEQUALITY_GRAPH_CONTROLS
-    ):
-        raise PlanRefused("a linear inequality needs its Cartesian composite surface")
-    written = [item.strip() for item in expressions if item.strip()]
-    inequalities = [item for item in written if _INEQUALITY.search(item)]
-    if not inequalities:
-        raise PlanRefused("a linear inequality graph requires one stated inequality")
-    if len(inequalities) > 1:
-        plans = [
-            build_linear_inequality_graph_plan(instruction, [item], context)
-            for item in inequalities
-        ]
-        if any(plan != plans[0] for plan in plans[1:]):
-            raise PlanRefused(
-                "a linear inequality graph requires one stated inequality"
-            )
-        return plans[0]
-    expression = inequalities[0]
+def _linear_inequality_semantics(expression: str) -> tuple[list[int], str]:
+    """One exact normalized affine boundary and its oriented relation."""
     match = _INEQUALITY.search(expression)
     if match is None or _INEQUALITY.search(expression, match.end()) is not None:
         raise PlanRefused("the expression is not one inequality")
@@ -574,6 +573,39 @@ def build_linear_inequality_graph_plan(
     if first < 0:
         integers = [-value for value in integers]
         relation = {"<": ">", "<=": ">=", ">": "<", ">=": "<="}[relation]
+    return integers, relation
+
+
+def build_linear_inequality_graph_plan(
+    instruction: str, expressions: list[str], context: GraphContext
+) -> dict[str, Any]:
+    """Derive the exact boundary and half-plane relation for one inequality."""
+    if not re.search(
+        r"\bgraph\b[^.?!]*\b(?:linear\s+)?inequalit", instruction, re.IGNORECASE
+    ):
+        raise PlanRefused("this is not a request to graph a linear inequality")
+    if (
+        context.family != INEQUALITY_GRAPH_FAMILY
+        or context.orientation != LINE_GRAPH_ORIENTATION
+        or context.controls != INEQUALITY_GRAPH_CONTROLS
+    ):
+        raise PlanRefused("a linear inequality needs its Cartesian composite surface")
+    written = [item.strip() for item in expressions if item.strip()]
+    inequalities = [item for item in written if _INEQUALITY.search(item)]
+    if not inequalities:
+        raise PlanRefused("a linear inequality graph requires one stated inequality")
+    if len(inequalities) > 1:
+        plans = [
+            build_linear_inequality_graph_plan(instruction, [item], context)
+            for item in inequalities
+        ]
+        if any(plan != plans[0] for plan in plans[1:]):
+            raise PlanRefused(
+                "a linear inequality graph requires one stated inequality"
+            )
+        return plans[0]
+    expression = inequalities[0]
+    integers, relation = _linear_inequality_semantics(expression)
     xmin, xmax, ymin, ymax = map(_fraction, context.bounds)
     a, b, c = map(Fraction, integers)
 
@@ -610,4 +642,47 @@ def build_linear_inequality_graph_plan(
         "relation": relation,
         "boundary": "dashed" if relation in {"<", ">"} else "solid",
         "points": [{"x": _written(px), "y": _written(py)} for px, py in chosen],
+    }
+
+
+def build_linear_inequality_system_graph_plan(
+    instruction: str, expressions: list[str], context: GraphContext
+) -> dict[str, Any]:
+    """Preserve a two-inequality connector and derive both exact boundaries."""
+    if not re.search(
+        r"\bsystem\b[^.?!]*\blinear\s+inequalit", instruction, re.IGNORECASE
+    ):
+        raise PlanRefused("this is not a linear inequality system")
+    if (
+        context.family != INEQUALITY_SYSTEM_GRAPH_FAMILY
+        or context.orientation is not None
+        or context.controls != INEQUALITY_SYSTEM_GRAPH_CONTROLS
+        or context.bounds
+        or context.snap
+        or context.connector not in {"and", "or"}
+    ):
+        raise PlanRefused("a linear inequality system needs its mounted-region surface")
+    written = [item.strip() for item in expressions if item.strip()]
+    if len(written) != 2 or any(_INEQUALITY.search(item) is None for item in written):
+        raise PlanRefused("a linear inequality system requires two stated inequalities")
+    members = []
+    for item in written:
+        coefficients, relation = _linear_inequality_semantics(item)
+        members.append(
+            {
+                "coefficients": {
+                    "x": str(coefficients[0]),
+                    "y": str(coefficients[1]),
+                    "constant": str(coefficients[2]),
+                },
+                "relation": relation,
+                "boundary": "dashed" if relation in {"<", ">"} else "solid",
+            }
+        )
+    connector = context.connector
+    return {
+        "kind": "linear-inequality-system",
+        "connector": connector,
+        "operation": "union" if connector == "or" else "intersection",
+        "inequalities": members,
     }

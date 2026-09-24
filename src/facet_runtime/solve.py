@@ -54,6 +54,7 @@ from facet_runtime.exact import (
 from facet_runtime.graph import (
     LINEAR_GRAPH_PLAN,
     LINEAR_INEQUALITY_GRAPH_PLAN,
+    LINEAR_INEQUALITY_SYSTEM_GRAPH_PLAN,
     PARABOLA_PLAN,
     POINT_PLOT_PLAN,
     QUADRATIC_REGRESSION,
@@ -62,6 +63,7 @@ from facet_runtime.graph import (
     Point,
     build_linear_graph_plan,
     build_linear_inequality_graph_plan,
+    build_linear_inequality_system_graph_plan,
     build_point_plot_plan,
     parabola_prompt,
     parse_graph_context,
@@ -97,6 +99,7 @@ RESULT_KINDS: tuple[str, ...] = (
     POINT_PLOT_PLAN,
     LINEAR_GRAPH_PLAN,
     LINEAR_INEQUALITY_GRAPH_PLAN,
+    LINEAR_INEQUALITY_SYSTEM_GRAPH_PLAN,
 )
 
 #: Which problem fields belong to which requested result. A field that means
@@ -135,6 +138,10 @@ PROBLEM_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     POINT_PLOT_PLAN: (("instruction",), ("expressions", "label")),
     LINEAR_GRAPH_PLAN: (("instruction", "expressions", "graph"), ("label",)),
     LINEAR_INEQUALITY_GRAPH_PLAN: (("instruction", "expressions", "graph"), ("label",)),
+    LINEAR_INEQUALITY_SYSTEM_GRAPH_PLAN: (
+        ("instruction", "expressions", "graph"),
+        ("label",),
+    ),
 }
 
 #: `PART 1: ...` from a multi-part reasoning reply. Structured on purpose: the
@@ -280,6 +287,7 @@ def parse_problem(payload: Any) -> MathProblem:
         PARABOLA_PLAN,
         LINEAR_GRAPH_PLAN,
         LINEAR_INEQUALITY_GRAPH_PLAN,
+        LINEAR_INEQUALITY_SYSTEM_GRAPH_PLAN,
     } or (kind == VALUE and "points" not in payload)
     if written and (
         not isinstance(expressions, list)
@@ -312,7 +320,13 @@ def parse_problem(payload: Any) -> MathProblem:
     try:
         graph = (
             parse_graph_context(payload["graph"])
-            if kind in {PARABOLA_PLAN, LINEAR_GRAPH_PLAN, LINEAR_INEQUALITY_GRAPH_PLAN}
+            if kind
+            in {
+                PARABOLA_PLAN,
+                LINEAR_GRAPH_PLAN,
+                LINEAR_INEQUALITY_GRAPH_PLAN,
+                LINEAR_INEQUALITY_SYSTEM_GRAPH_PLAN,
+            }
             else None
         )
         points = (
@@ -540,6 +554,7 @@ def _answer(
     relation: Relation | None = None,
     intercepts=None,
     choice: str = "",
+    inequality_pair=None,
 ) -> dict[str, Any]:
     """One answer to write down, tagged with the kind it is.
 
@@ -584,6 +599,20 @@ def _answer(
     }
     if choice:
         answer["choice"] = choice
+    if inequality_pair is not None:
+        answer["inequality_pair"] = {
+            "left": {
+                "left": inequality_pair.left.left,
+                "relation": inequality_pair.left.relation,
+                "right": inequality_pair.left.right,
+            },
+            "connector": inequality_pair.connector,
+            "right": {
+                "left": inequality_pair.right.left,
+                "relation": inequality_pair.right.relation,
+                "right": inequality_pair.right.right,
+            },
+        }
     return answer
 
 
@@ -609,6 +638,7 @@ def _exact_result(solution: ExactSolution, elapsed_ms: float) -> dict[str, Any]:
             solution.relation,
             solution.intercepts,
             solution.choice,
+            solution.inequality_pair,
         ),
         "provenance": {
             # The identity Facet answers to when it computed the answer itself.
@@ -971,6 +1001,33 @@ def solve_math(problem: MathProblem, *, reason) -> dict[str, Any]:
             "provenance": {
                 "source": "Facet Exact",
                 "method": "SymPy exact linear inequality graph",
+                "router": "solved",
+                "router_detail": "",
+                "runtime": f"SymPy {sympy.__version__}",
+                "model": None,
+                "device": None,
+                "requested_backend": None,
+                "actual_backend": None,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
+                "fallback": False,
+                "metrics": {},
+                "evidence": {"source": "facet exact solver", "model_calls": 0},
+            },
+        }
+    if problem.result_kind == LINEAR_INEQUALITY_SYSTEM_GRAPH_PLAN:
+        try:
+            assert problem.graph is not None
+            plan = build_linear_inequality_system_graph_plan(
+                problem.instruction, list(problem.expressions), problem.graph
+            )
+        except PlanRefused as error:
+            raise SolveRefused("unusable_result", str(error)) from error
+        return {
+            "route": "exact",
+            "answer": _plan_answer(problem.result_kind, plan),
+            "provenance": {
+                "source": "Facet Exact",
+                "method": "SymPy exact linear inequality system",
                 "router": "solved",
                 "router_detail": "",
                 "runtime": f"SymPy {sympy.__version__}",

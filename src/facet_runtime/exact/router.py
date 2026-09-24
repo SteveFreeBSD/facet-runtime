@@ -43,8 +43,13 @@ from facet_runtime.exact.distance import (
     solve_point_distance,
 )
 from facet_runtime.exact.inequality import (
+    INEQUALITY_GRAPH_CHOICE_REQUEST,
     INEQUALITY_METHOD,
+    INEQUALITY_PAIR_REQUEST,
     INEQUALITY_REQUEST,
+    InequalityPair,
+    choose_linear_inequality_graph,
+    rewrite_absolute_value_inequality,
     solve_linear_inequality,
     states_an_inequality,
 )
@@ -210,6 +215,7 @@ CONDITIONAL_CHOICE = "conditional-choice"
 #: and no way for anyone to tell.
 RELATION = "relation"
 AXIS_INTERCEPTS = "axis-intercepts"
+INEQUALITY_PAIR = "inequality-pair"
 ANSWER_FORMS: tuple[str, ...] = (
     SCALAR,
     ORDERED_PAIR,
@@ -218,6 +224,7 @@ ANSWER_FORMS: tuple[str, ...] = (
     CONDITIONAL_CHOICE,
     RELATION,
     AXIS_INTERCEPTS,
+    INEQUALITY_PAIR,
 )
 
 
@@ -271,6 +278,9 @@ class ExactSolution:
     #: Both named axis intercepts.  ``None`` for one axis means the line has no
     #: point on that axis; it is not a phrase or a scalar value.
     intercepts: AxisIntercepts | None = None
+    #: Two comparisons and their logical connector, for a rewrite step whose
+    #: answer surface is one composite rather than two unrelated values.
+    inequality_pair: InequalityPair | None = None
     #: Which family this answer belongs to. `scalar` is the default because it
     #: is what most exact answers are: one written value.
     form: str = SCALAR
@@ -499,6 +509,51 @@ def solve_exact(
     # when the question names an inequality *and* one is written; a decline
     # names its gap and still reaches the reasoning route, because a quadratic
     # or a union is a real question this family simply does not answer.
+    if INEQUALITY_GRAPH_CHOICE_REQUEST.search(instruction) and states_an_inequality(
+        expressions
+    ):
+        choice, evidence, refusal = choose_linear_inequality_graph(
+            instruction, expressions, choices or []
+        )
+        if choice is None:
+            # A model cannot recover graph geometry that deliberately crosses
+            # only through the bounded semantic-choice contract.  Do not let
+            # it guess from prose or from an absent screenshot.
+            raise ExactlyRefused(refusal)
+        return (
+            ExactSolution(
+                display=choice,
+                entry=choice,
+                entry_mode="verbatim",
+                form=CHOICE,
+                method=INEQUALITY_METHOD,
+                evidence=evidence,
+            ),
+            "",
+        )
+
+    if INEQUALITY_PAIR_REQUEST.search(instruction) and states_an_inequality(
+        expressions
+    ):
+        pair, refusal = rewrite_absolute_value_inequality(instruction, expressions)
+        if pair is None:
+            raise ExactlyRefused(refusal)
+        return (
+            ExactSolution(
+                display=pair.written,
+                entry_mode="math",
+                form=INEQUALITY_PAIR,
+                method=INEQUALITY_METHOD,
+                inequality_pair=pair,
+                evidence={
+                    "connector": pair.connector,
+                    "left_relation": pair.left.relation,
+                    "right_relation": pair.right.relation,
+                },
+            ),
+            "",
+        )
+
     if INEQUALITY_REQUEST.search(instruction) and states_an_inequality(expressions):
         solved, refusal = solve_linear_inequality(instruction, expressions)
         if solved is None:
