@@ -493,7 +493,7 @@ def build_linear_graph_plan(
     }
 
 
-_INEQUALITY = re.compile(r"(?P<relation><=|>=|<|>|\\leq?|\\geq?)")
+_INEQUALITY = re.compile(r"(?P<relation><=|>=|≤|≥|<|>|\\leq?|\\geq?)")
 
 
 def build_linear_inequality_graph_plan(
@@ -562,9 +562,14 @@ def build_linear_inequality_graph_plan(
     integers = [int(value * denominator) for value in values]
     divisor = abs(sympy.igcd(*integers)) or 1
     integers = [value // divisor for value in integers]
-    relation = {r"\le": "<=", r"\leq": "<=", r"\ge": ">=", r"\geq": ">="}.get(
-        match.group("relation"), match.group("relation")
-    )
+    relation = {
+        "≤": "<=",
+        "≥": ">=",
+        r"\le": "<=",
+        r"\leq": "<=",
+        r"\ge": ">=",
+        r"\geq": ">=",
+    }.get(match.group("relation"), match.group("relation"))
     first = next(value for value in integers if value)
     if first < 0:
         integers = [-value for value in integers]

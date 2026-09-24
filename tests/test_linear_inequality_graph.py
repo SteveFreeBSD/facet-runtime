@@ -78,8 +78,9 @@ def test_two_stated_inequalities_are_refused():
     ("expression", "relation", "boundary"),
     [
         ("-2x-6y>=-6", "<=", "solid"),
+        ("-2x-6y≥-6", "<=", "solid"),
         ("x>4", ">", "dashed"),
-        ("y<=-2", "<=", "solid"),
+        ("y≤-2", "<=", "solid"),
     ],
 )
 def test_relation_direction_and_boundary_style_are_normalized(
