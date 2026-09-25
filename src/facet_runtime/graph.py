@@ -410,7 +410,7 @@ LINEAR_GRAPH_REQUEST = re.compile(
 # integer solutions of one equation, not necessarily its axis intercepts.
 INTEGER_LINE_POINTS_REQUEST = re.compile(
     r"\b(?:graph|plot)\b[^.?!]*\b(?:any\s+)?(?:two|2)\s+"
-    r"(?:ordered\s+pairs|points)\b[^.?!]*\binteger\s+coordinates\b"
+    r"(?:ordered\s+pairs|points)\b[^.?!]*\binteger(?:[-\s]+valued?)?\s+coordinates\b"
     r"[^.?!]*\b(?:satisfy|satisfying)\b[^.?!]*\bequation\b",
     re.IGNORECASE,
 )

@@ -127,6 +127,15 @@ def test_missing_authority_fails_without_model():
         )
 
 
+@pytest.mark.parametrize(
+    "adjective", ["integer", "integer value", "integer-valued", "integer valued"]
+)
+def test_integer_wording_variants(adjective):
+    result = solve("y=3*x+1", instruction=INSTRUCTION.replace("integer", adjective))
+    assert result["route"] == "exact"
+    assert result["provenance"]["evidence"]["model_calls"] == 0
+
+
 def test_conflicting_stated_points_are_not_derived():
     with pytest.raises(SolveRefused):
         solve("y=x", instruction=INSTRUCTION + " Use (0,0) and (1,2).")
