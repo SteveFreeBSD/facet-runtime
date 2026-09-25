@@ -379,13 +379,17 @@ def read_plot_points(instruction: str, expressions: list[str]) -> list[dict[str,
     return found
 
 
-def build_point_plot_plan(instruction: str, expressions: list[str]) -> dict[str, Any]:
+def build_point_plot_plan(
+    instruction: str, expressions: list[str], context: GraphContext | None = None
+) -> dict[str, Any]:
     """The plan for a "plot these points" question, or a refusal.
 
     A plan and not an answer: it says where the page's own controls must end
     up, and the browser proves every one of them against the live graph before
     a key is pressed.
     """
+    if INTEGER_LINE_POINTS_REQUEST.search(instruction or ""):
+        return build_integer_line_point_plan(instruction, expressions, context)
     if not PLOT_REQUEST.search(instruction or ""):
         raise PlanRefused("this is not a request to plot stated points")
     points = read_plot_points(instruction, expressions)
@@ -401,6 +405,99 @@ LINEAR_GRAPH_REQUEST = re.compile(
     r"\bgraph\b[^.?!]*\bequation\b[^.?!]*\b(?:x|y)[-\s]?intercepts?\b",
     re.IGNORECASE,
 )
+
+# A distinct point-plan operation: the pairs are chosen, not quoted, and are
+# integer solutions of one equation, not necessarily its axis intercepts.
+INTEGER_LINE_POINTS_REQUEST = re.compile(
+    r"\b(?:graph|plot)\b[^.?!]*\b(?:any\s+)?(?:two|2)\s+"
+    r"(?:ordered\s+pairs|points)\b[^.?!]*\binteger\s+coordinates\b"
+    r"[^.?!]*\b(?:satisfy|satisfying)\b[^.?!]*\bequation\b",
+    re.IGNORECASE,
+)
+
+
+def build_integer_line_point_plan(
+    instruction: str, expressions: list[str], context: GraphContext | None
+) -> dict[str, Any]:
+    """Choose two small integer solutions in the exact visible snap lattice.
+
+    The existing affine parser yields integer a,b,c. Intersect the full
+    Diophantine solution parameter with both coordinate bounds, then minimize
+    |x|+|y| at its breakpoints. No grid-size-dependent scan or approximation.
+    """
+    if not INTEGER_LINE_POINTS_REQUEST.search(instruction or ""):
+        raise PlanRefused("this is not an integer line-point request")
+    if context is None or (context.family, context.orientation, context.controls) != (
+        LINE_GRAPH_FAMILY,
+        LINE_GRAPH_ORIENTATION,
+        LINE_GRAPH_CONTROLS,
+    ):
+        raise PlanRefused("integer line points require authoritative graph geometry")
+    if re.search(r"\bintercepts?\b", instruction, re.IGNORECASE) or read_plot_points(
+        instruction, expressions
+    ):
+        raise PlanRefused(
+            "integer line-point selection conflicts with stated points or intercepts"
+        )
+    try:
+        from facet_runtime.exact.intercepts import affine_coefficients
+
+        coefficients = affine_coefficients(expressions)
+    except ValueError as error:
+        raise PlanRefused(str(error)) from error
+    xmin, xmax, ymin, ymax = map(_fraction, context.bounds)
+    sx, sy = map(_fraction, context.snap)
+    # An integer coordinate on rational spacing p/q must be a multiple of p.
+    px, py = sx.numerator, sy.numerator
+    a, b, c = map(int, coefficients)
+    aa, bb = a * px, b * py
+    divisor = math.gcd(aa, bb)
+    if not divisor or (-c) % divisor:
+        raise PlanRefused("the equation has no integer solutions on this graph grid")
+    u, v, _ = sympy.gcdex(aa, bb)
+    x0, y0 = int(u) * (-c // divisor) * px, int(v) * (-c // divisor) * py
+    dx, dy = (bb // divisor) * px, -(aa // divisor) * py
+    lower, upper = None, None
+    for base, step, minimum, maximum in ((x0, dx, xmin, xmax), (y0, dy, ymin, ymax)):
+        if not step:
+            if not minimum <= base <= maximum:
+                raise PlanRefused("the line misses the visible graph range")
+            continue
+        limits = sorted(((minimum - base) / step, (maximum - base) / step))
+        lo, hi = math.ceil(limits[0]), math.floor(limits[1])
+        lower = lo if lower is None else max(lower, lo)
+        upper = hi if upper is None else min(upper, hi)
+    if lower is None or upper is None or upper - lower < 1:
+        raise PlanRefused("fewer than two distinct in-bounds integer points exist")
+    candidates = {lower, lower + 1, upper - 1, upper}
+    # Axis roots minimize total size; x=+/-y also breaks ties by the largest
+    # coordinate when the total is constant across an interval.
+    for base, step in ((x0, dx), (y0, dy), (x0 - y0, dx - dy), (x0 + y0, dx + dy)):
+        if step:
+            root = Fraction(-base, step)
+            for nearest in (math.floor(root), math.ceil(root)):
+                candidates.update(
+                    max(lower, min(upper, nearest + offset)) for offset in (-1, 0, 1)
+                )
+    points = sorted(
+        {(x0 + dx * t, y0 + dy * t) for t in candidates},
+        key=lambda p: (
+            abs(p[0]) + abs(p[1]),
+            max(abs(p[0]), abs(p[1])),
+            abs(p[0]),
+            p[0] < 0,
+            p[1] < 0,
+        ),
+    )[:2]
+    if len(points) != 2 or any(
+        not (xmin <= x <= xmax and ymin <= y <= ymax)
+        or a * x + b * y + c != 0
+        or (Fraction(x) / sx).denominator != 1
+        or (Fraction(y) / sy).denominator != 1
+        for x, y in points
+    ):
+        raise PlanRefused("integer line-point verification failed")
+    return {"kind": "points", "points": [{"x": str(x), "y": str(y)} for x, y in points]}
 
 
 def _fraction(value: str | float) -> Fraction:

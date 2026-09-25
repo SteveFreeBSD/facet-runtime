@@ -65,8 +65,8 @@ class AffineLine:
     intercepts: AxisIntercepts
 
 
-def affine_line(expressions: list[str]) -> AffineLine:
-    """Parse and prove one rational affine equation, independent of wording."""
+def affine_coefficients(expressions: list[str]) -> tuple[str, str, str]:
+    """Parse one rational affine equation, without assuming unique intercepts."""
     relations = [item for item in expressions if "=" in item]
     if len(relations) != 1 or len([item for item in expressions if item.strip()]) != 1:
         raise ValueError("a line requires one stated equation")
@@ -97,6 +97,15 @@ def affine_line(expressions: list[str]) -> AffineLine:
     first = next(value for value in integers if value)
     if first < 0:
         integers = [-value for value in integers]
+    return tuple(str(value) for value in integers)
+
+
+def affine_line(expressions: list[str]) -> AffineLine:
+    """Prove an affine line and its unique-or-absent axis intercepts."""
+    coefficients = affine_coefficients(expressions)
+    x, y = sympy.symbols("x y", real=True)
+    a, b, c = map(sympy.Integer, coefficients)
+    residual = a * x + b * y + c
 
     x_value = _one_intercept(residual, variable=x, other=y)
     y_value = _one_intercept(residual, variable=y, other=x)
@@ -104,7 +113,7 @@ def affine_line(expressions: list[str]) -> AffineLine:
         x=None if x_value is None else Coordinate(str(x_value), "0"),
         y=None if y_value is None else Coordinate("0", str(y_value)),
     )
-    return AffineLine(*(str(value) for value in integers), intercepts)
+    return AffineLine(*coefficients, intercepts)
 
 
 def _one_intercept(

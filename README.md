@@ -351,6 +351,18 @@ upwards has no maximum, and its vertex is the answer to the opposite question.
 
 ### Plans
 
+`point_plot_plan` has two separate deterministic operations: transcribe stated
+ordered pairs, or derive any two integer-coordinate points satisfying a linear
+equation. The latter requires an explicit integer-point plotting instruction
+and authoritative Cartesian `graph` bounds/snap with two-point controls. It
+reuses the exact affine coefficient parser, intersects the integer-solution
+lattice with the visible range, prefers small coordinates, and verifies both
+distinct points by exact substitution. It refuses missing geometry, conflicting
+literal/intercept instructions, and fewer than two usable integer points.
+Both operations return typed point plans with `route: "exact"` and
+`model_calls: 0`; neither may fall back to a model. The consumer must independently
+verify the equation, bounds and page-owned insertion/read-back.
+
 Two families ask for geometry rather than a value: a vertical parabola somebody
 will draw, and the coefficients of a quadratic regression over points somebody
 measured. Neither has a deterministic route -- fitting a curve to draw is a

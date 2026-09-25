@@ -53,6 +53,7 @@ from facet_runtime.exact import (
 )
 from facet_runtime.exact.linear_coordinate import CoordinateTask, parse_task
 from facet_runtime.graph import (
+    INTEGER_LINE_POINTS_REQUEST,
     LINEAR_GRAPH_PLAN,
     LINEAR_INEQUALITY_GRAPH_PLAN,
     LINEAR_INEQUALITY_SYSTEM_GRAPH_PLAN,
@@ -136,9 +137,8 @@ PROBLEM_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
     ),
     PARABOLA_PLAN: (("instruction", "expressions", "graph"), ("label",)),
     QUADRATIC_REGRESSION: (("instruction", "points"), ("label",)),
-    # No `graph` context: a plotting plan is read from the question's own
-    # words, and the live graph is what the browser proves it against.
-    POINT_PLOT_PLAN: (("instruction",), ("expressions", "label")),
+    # Stated pairs need no geometry; derived integer pairs require it.
+    POINT_PLOT_PLAN: (("instruction",), ("expressions", "label", "graph")),
     LINEAR_GRAPH_PLAN: (("instruction", "expressions", "graph"), ("label",)),
     LINEAR_INEQUALITY_GRAPH_PLAN: (("instruction", "expressions", "graph"), ("label",)),
     LINEAR_INEQUALITY_SYSTEM_GRAPH_PLAN: (
@@ -331,6 +331,8 @@ def parse_problem(payload: Any) -> MathProblem:
                 LINEAR_INEQUALITY_GRAPH_PLAN,
                 LINEAR_INEQUALITY_SYSTEM_GRAPH_PLAN,
             }
+            else parse_graph_context(payload["graph"])
+            if kind == POINT_PLOT_PLAN and "graph" in payload
             else None
         )
         points = (
@@ -950,12 +952,13 @@ def solve_math(problem: MathProblem, *, reason) -> dict[str, Any]:
     decline in the first place.
     """
     started = time.perf_counter()
-    # A plotting question states its own answer: the pairs are written down, so
-    # there is nothing for a model to work out and asking one would be
-    # inventing uncertainty. Deterministic, and no backend is engaged at all.
+    # Literal pairs and bounded integer solutions are distinct exact operations
+    # sharing a typed point plan. Neither operation may engage a model.
     if problem.result_kind == POINT_PLOT_PLAN:
         try:
-            plan = build_point_plot_plan(problem.instruction, list(problem.expressions))
+            plan = build_point_plot_plan(
+                problem.instruction, list(problem.expressions), problem.graph
+            )
         except PlanRefused as error:
             raise SolveRefused("unusable_result", str(error)) from error
         return {
@@ -963,7 +966,9 @@ def solve_math(problem: MathProblem, *, reason) -> dict[str, Any]:
             "answer": _plan_answer(problem.result_kind, plan),
             "provenance": {
                 "source": "Facet Exact",
-                "method": "stated points read from the question",
+                "method": "SymPy exact integer line points"
+                if INTEGER_LINE_POINTS_REQUEST.search(problem.instruction)
+                else "stated points read from the question",
                 "router": "solved",
                 "router_detail": "",
                 "runtime": f"SymPy {sympy.__version__}",
